@@ -1,8 +1,7 @@
 # datamatrix-rs
 
-[![crates.io](https://img.shields.io/crates/d/datamatrix.svg)](https://crates.io/crates/datamatrix)
-[![Dokümantasyon](https://docs.rs/datamatrix/badge.svg)](https://docs.rs/datamatrix)
-![Lisans](https://img.shields.io/crates/l/datamatrix)
+[![CI](https://github.com/hakantr/datamatrix-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/hakantr/datamatrix-rs/actions/workflows/ci.yml)
+![Lisans](https://img.shields.io/github/license/hakantr/datamatrix-rs)
 
 Optimizing encoder içeren Data Matrix (ECC 200) decoding ve encoding kütüphanesi.
 
@@ -46,6 +45,59 @@ Kütüphane diğer çıktı formatlarını üretmek için yardımcılar içerir.
 `examples/` dizinindedir. Son rendering adımının ek maliyeti genellikle düşüktür ve
 bu yaklaşım yüksek esneklik sağlar.
 
+## GPUI desteği
+
+`gpui` feature, Data Matrix'i yerel GPUI element ağacında doğrudan render etmek
+için `DataMatrixElement` ve tekrar kullanılabilir `PreparedDataMatrix` yapılarını
+etkinleştirir:
+
+```rust
+use datamatrix::{
+    DataMatrix, SymbolList,
+    data::DataEncodingError,
+    gpui::{DataMatrixElement, PreparedDataMatrix},
+};
+
+fn giriş_kodu() -> Result<DataMatrixElement, DataEncodingError> {
+    let code = DataMatrix::encode(b"gpui", SymbolList::default())?;
+    let prepared = PreparedDataMatrix::new(&code);
+    Ok(DataMatrixElement::new("giris-data-matrix", prepared))
+}
+```
+
+`PreparedDataMatrix`, HIGH module run'larını render döngüsünden önce hesaplar ve
+`Arc` ile paylaşır. Değişmeyen bir kod her frame yeniden encode edilmemeli veya
+hazırlanmamalıdır. Element, available bounds içine en büyük tam fiziksel-piksel
+module boyutuyla yerleşir; quiet zone'u korur ve varsayılan olarak erişilebilir bir
+`Image` rolü sunar.
+
+### Yerel repo sözleşmesi
+
+Bu feature yalnızca `../gpui/crates/gpui` yolundaki GPUI kaynak kodunu kullanır.
+Crates.io'daki `gpui` paketi için version veya registry fallback tanımlanmamıştır.
+`qrcode-rust` da örnek ve testlerde `../qrcode-rust` yolundan kullanılır. Beklenen
+dizin düzeni şöyledir:
+
+```text
+github/
+├── datamatrix-rs/
+├── gpui/
+└── qrcode-rust/
+```
+
+Tüketen uygulama, GPUI trait ve türlerinin tek bir crate kimliğinden gelmesi için
+aynı path dependency'yi kullanmalıdır:
+
+```toml
+[dependencies]
+datamatrix = { path = "../datamatrix-rs", features = ["gpui"] }
+gpui = { path = "../gpui/crates/gpui", default-features = false }
+```
+
+Bu nedenle bu fork crates.io package/publish akışını hedeflemez; tüketen workspace
+aynı kardeş repo düzenini sağlamalıdır. CI, GPUI ve qrcode-rust kaynaklarını bilinen
+commit'lere sabitleyerek bu sözleşmeyi doğrular.
+
 ## Hata ve panik sözleşmesi
 
 Kamuya açık fonksiyonlar geçersiz dış girdi, desteklenmeyen seçenek veya normal
@@ -70,6 +122,7 @@ panikleri bu sözleşmenin dışındadır.
 - [x] Reed–Solomon decoder/encoder.
 - [x] Tile placement encoding.
 - [x] Rendering yardımcıları.
+- [x] Yerel GPUI snapshot'ı için feature-gated rendering bileşeni.
 - [x] ISO 21471 ile tanımlanan ve yeni rectangular symbol size değerleri ekleyen
       [Extended Rectangular Data Matrix (DMRE)](https://e-d-c.info/projekte/dmre.html).
 - [x] Tile placement decoding.

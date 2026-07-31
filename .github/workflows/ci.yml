@@ -6,55 +6,86 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  lint:
-    name: Code lints
+  quality:
+    name: Biçim, lint, dokümantasyon ve testler
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: datamatrix-rs
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features
-
-  format:
-    name: Code format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rustfmt
-        run: cargo fmt --all -- --check
-
-  tests:
-    name: Documentation
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: -Dwarnings
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Check rustdoc
+      - name: datamatrix-rs deposunu indir
+        uses: actions/checkout@v7
+        with:
+          path: datamatrix-rs
+      - name: Yerel GPUI snapshot'ını indir
+        uses: actions/checkout@v7
+        with:
+          repository: hakantr/gpui
+          ref: b460c6d21e0738374d79fa854baf4d17da221371
+          path: gpui
+      - name: Yerel qrcode-rust snapshot'ını indir
+        uses: actions/checkout@v7
+        with:
+          repository: hakantr/qrcode-rust
+          ref: cbba285d0694fe9c461b146b884fd0ed2dbf9413
+          path: qrcode-rust
+      - name: Yerel bağımlılık snapshot'larını doğrula
+        run: |
+          git -C ../gpui rev-parse HEAD | grep -Fx b460c6d21e0738374d79fa854baf4d17da221371
+          git -C ../qrcode-rust rev-parse HEAD | grep -Fx cbba285d0694fe9c461b146b884fd0ed2dbf9413
+      - name: Rust 1.95.0 toolchain'ini kur
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+      - name: Cargo önbelleğini yükle
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: datamatrix-rs -> target
+      - name: Biçimi denetle
+        run: cargo fmt --package datamatrix -- --check
+      - name: Temel no_std derlemesini denetle
+        run: cargo check --no-default-features --lib
+      - name: Clippy lintlerini çalıştır
+        run: cargo clippy --all-targets --all-features --no-deps -- -D warnings
+      - name: Dokümantasyonu denetle
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: cargo doc --all-features --no-deps --document-private-items
-
-  unit-test:
-    name: Unit tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets --all-features
+      - name: Birim ve entegrasyon testlerini çalıştır
+        run: cargo test --all-targets --all-features
+      - name: Dokümantasyon testlerini çalıştır
+        run: cargo test --doc --all-features
 
   semantic-versioning:
-    name: Check semantic versioning
+    name: Semantik sürümlemeyi denetle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: Check semver
+      - name: datamatrix-rs deposunu indir
+        uses: actions/checkout@v7
+        with:
+          path: datamatrix-rs
+      - name: Yerel GPUI snapshot'ını indir
+        uses: actions/checkout@v7
+        with:
+          repository: hakantr/gpui
+          ref: b460c6d21e0738374d79fa854baf4d17da221371
+          path: gpui
+      - name: Yerel qrcode-rust snapshot'ını indir
+        uses: actions/checkout@v7
+        with:
+          repository: hakantr/qrcode-rust
+          ref: cbba285d0694fe9c461b146b884fd0ed2dbf9413
+          path: qrcode-rust
+      - name: Semver uyumluluğunu denetle
         uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          manifest-path: datamatrix-rs/Cargo.toml
+          feature-group: all-features
+          rust-toolchain: 1.95.0

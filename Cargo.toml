@@ -1,13 +1,14 @@
 [package]
 name = "datamatrix"
-version = "0.3.3"
+version = "0.4.0"
 authors = ["Jannik Schürg <jannik.schuerg+crates@posteo.de>"]
 edition = "2024"
 rust-version = "1.95"
+publish = false
 readme = "README.md"
 license = "Apache-2.0 OR MIT"
 description = "Optimizing encoder ile Data Matrix (ECC 200) decoding ve encoding"
-repository = "https://github.com/jannschu/datamatrix-rs/"
+repository = "https://github.com/hakantr/datamatrix-rs/"
 categories = ["encoding"]
 keywords = ["codematrix", "datamatrix", "semacode", "no_std"]
 

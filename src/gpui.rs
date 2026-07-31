@@ -3,6 +3,21 @@
 //! Bu modül yalnızca `gpui` feature etkinleştirildiğinde derlenir ve
 //! `../gpui/crates/gpui` içindeki API'yi hedefler. Data Matrix encoding ile
 //! bitmap hazırlığı render döngüsünün dışında yapılmalıdır.
+//!
+//! # Örnek
+//!
+//! ```rust
+//! use datamatrix::{
+//!     DataMatrix, SymbolList,
+//!     gpui::{DataMatrixElement, PreparedDataMatrix},
+//! };
+//!
+//! let code = DataMatrix::encode(b"gpui", SymbolList::default())?;
+//! let prepared = PreparedDataMatrix::new(&code);
+//! let element = DataMatrixElement::new("giris-data-matrix", prepared);
+//! # let _ = element;
+//! # Ok::<(), datamatrix::data::DataEncodingError>(())
+//! ```
 
 use alloc::{sync::Arc, vec::Vec};
 use core::num::{NonZeroU8, NonZeroU16};
