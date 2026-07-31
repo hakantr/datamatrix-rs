@@ -33,7 +33,7 @@ encoding_rs = { version = "0.8.35", optional = true }
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 krilla = { version = "0.8.2", default-features = false }
-qrcode2 = { version = "0.18.0", default-features = false }
+qrcode2 = { package = "qrcode", path = "../qrcode-rust", default-features = false }
 enum-iterator = "2.3.0"
 pretty_assertions = "1.4.1"
 proptest = "1.11.0"
