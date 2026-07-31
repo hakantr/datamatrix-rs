@@ -8,7 +8,7 @@ use pretty_assertions::assert_eq;
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct X12Plan<T: ContextInformation> {
-    /// Number of values not yet written
+    /// Henüz yazılmamış değer sayısı.
     ctx: T,
     values: usize,
     ascii_end: Option<Frac>,
@@ -43,10 +43,10 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
 
     fn cost(&self) -> Frac {
         let mut cost = self.cost;
-        // X12 only emits complete triples. At end of data on a triple boundary
-        // the encoder returns to ASCII with a trailing UNLATCH before padding,
-        // unless the data fills the symbol exactly. A trailing ASCII tail is
-        // tracked by `ascii_end` and accounts for itself.
+        // X12 yalnızca tam üçlüler üretir. Veri symbol'ü tam doldurmuyorsa üçlü
+        // boundary üzerindeki end of data noktasında encoder padding öncesinde
+        // UNLATCH ile ASCII'ye döner. Sondaki ASCII kuyruğu `ascii_end` ile izlenir
+        // ve kendi cost'unu hesaba katar.
         if !self.ctx.has_more_characters()
             && self.ascii_end.is_none()
             && self.values == 0
@@ -67,13 +67,13 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
         let end = !self.ctx.has_more_characters();
         if !end {
             if self.values == 0 && self.ctx.characters_left() <= 2 && self.ascii_end.is_none() {
-                // are we in a possible end of data situation?
+                // Olası bir end of data durumunda mıyız?
                 let ascii_size = ascii::encoding_size(self.ctx.rest());
                 if ascii_size == 1 {
                     let space_left = self.ctx.symbol_size_left(ascii_size)?;
                     if space_left <= 1 {
                         if space_left == 1 {
-                            // unlatch
+                            // Unlatch
                             self.cost += 1;
                         }
                         let portion_per_char =
@@ -82,10 +82,9 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
                     }
                 }
                 if self.ascii_end.is_none() {
-                    // there are two chars remaining, with either ascii_size > 1 or
-                    // two much space left. in this scenario pure ascii is not
-                    // beatable (go through the cases)
-                    self.cost += 1; // unlatch
+                    // İki karakter kalmıştır ve ascii_size > 1'dir veya gereğinden
+                    // fazla alan vardır. Bu durumda saf ASCII iyileştirilemez.
+                    self.cost += 1; // Unlatch
                     let portion_per_char =
                         Frac::new(ascii_size as C, self.ctx.characters_left() as C);
                     self.ascii_end = Some(portion_per_char);
@@ -98,7 +97,7 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
                 }
             }
             if let Some(portion_per_char) = self.ascii_end {
-                // add (ascii_size / chars_to_read) every char read to get the correct size
+                // Doğru boyut için okunan her karakterde (ascii_size / chars_to_read) ekler.
                 self.ctx.eat()?;
                 self.cost += portion_per_char;
             } else {
@@ -135,11 +134,11 @@ fn test_eod_case2() {
     let symbols = crate::SymbolList::default();
     let mut plan = X12Plan::new(Context::new(b"AIMAIMAIMAIMAI", &symbols));
     for i in 0..12 {
-        assert!(plan.step().is_some(), "char {}", i + 1);
+        assert!(plan.step().is_some(), "karakter {}", i + 1);
     }
     assert_eq!(plan.cost(), 8.into());
-    // there are two chars (AI) remaining but the symbol is too large,
-    // total cost 3, split ov
+    // İki karakter (AI) kalmıştır ancak symbol gereğinden büyüktür;
+    // toplam cost 3'tür ve sonraki iki adıma bölünür.
     assert!(plan.step().is_some());
     assert_eq!(plan.cost(), 10.into());
     assert!(plan.step().is_some());

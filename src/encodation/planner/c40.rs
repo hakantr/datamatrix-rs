@@ -30,13 +30,13 @@ impl CharsetInfo for C40Charset {
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct C40LikePlan<T: ContextInformation, U: CharsetInfo> {
-    /// Number of values not yet written
+    /// Henüz yazılmamış değer sayısı.
     ctx: T,
     values: u8,
     unbeatable_reads: usize,
     ch: u8,
     two_digit_ascii_end: bool,
-    /// Codewords used by a two-trailing-digit ASCII ending (set at detection).
+    /// Sonda iki rakam bulunan ASCII bitişinin kullandığı codeword'ler.
     two_digit_tail: u8,
     cost: Frac,
     dummy: PhantomData<U>,
@@ -69,7 +69,7 @@ where
     let mut unbeatable_reads = 0;
     for ch in rest.iter().cloned().take_while(nice_char) {
         unbeatable_reads += 1;
-        // now only enough digits with ASCII can beat this
+        // Bu noktadan sonra yalnızca yeterli sayıdaki rakamı ASCII ile encode etmek daha iyi olabilir.
         if ch.is_ascii_digit() {
             consecutive_digits += 1;
             if consecutive_digits == 7 {
@@ -88,10 +88,10 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
 
     fn mode_switch_cost(&self) -> Option<Frac> {
         if self.values == 0 {
-            // Are at a boundary, only one UNLATCH
+            // Boundary üzerindedir; yalnızca bir UNLATCH gerekir.
             Some(self.cost + 1)
         } else {
-            // Fill up, then UNLATCH
+            // Doldurur, ardından UNLATCH uygular.
             Some(self.cost + 2 + 1)
         }
     }
@@ -102,7 +102,7 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
             if self.values > 2 {
                 return ctx;
             }
-            // finish C40 pair
+            // C40 çiftini tamamlar.
             ctx.write(2);
         }
         ctx.write(1);
@@ -114,45 +114,45 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
             return self.cost + Frac::new(2 * self.values as C, 3);
         }
         if self.two_digit_ascii_end {
-            // Two trailing digits are encoded in ASCII; the tail (the ASCII
-            // codeword plus an optional UNLATCH) was costed at detection.
+            // Sondaki iki rakam ASCII ile encode edilir; ASCII codeword ve isteğe
+            // bağlı UNLATCH'ten oluşan kuyruğun cost'u algılama sırasında hesaplandı.
             return self.cost + self.two_digit_tail as C;
         }
-        // compute additional cost to store remaining values
+        // Kalan değerleri saklamanın ek cost'unu hesaplar.
         let extra = if self.values == 2 {
             let space_left = self.ctx.symbol_size_left(2).unwrap_or(0);
             if space_left == 0 {
                 2
             } else {
-                // encode (val1, val2, 0) = 2 codewords
-                // and final unlatch to continue with padding
+                // (val1, val2, 0) = 2 codeword olarak encode eder ve padding ile
+                // devam etmek için son bir unlatch ekler.
                 3
             }
         } else if self.values == 1 {
-            // A single non-digit value is left (the two-trailing-digit ASCII
-            // ending returns earlier and never reaches here).
+            // Rakam olmayan tek bir değer kalmıştır. Sonda iki rakam bulunan ASCII
+            // bitişi daha önce döndüğü için buraya ulaşmaz.
             let space_left = self.ctx.symbol_size_left(1).unwrap_or(0);
             let ascii_size = ascii::encoding_size(&[self.ch]);
             if space_left == 0 {
                 if ascii_size == 1 {
                     1
                 } else {
-                    // we need a bigger symbol in this case (if possible)
+                    // Bu durumda mümkünse daha büyük bir symbol gerekir.
                     1 + ascii_size
                 }
             } else if space_left == 1 {
-                // UNLATCH and then encode as ASCII (c40.rs handle_end case c)
+                // UNLATCH uygular, ardından ASCII ile encode eder (c40.rs handle_end c durumu).
                 1 + ascii_size
             } else {
-                // With two or more codewords left the encoder does not switch
-                // to ASCII for the single value: it pads it into a full C40
-                // triple (2 codewords) and then UNLATCHes before padding.
+                // İki veya daha fazla codeword kaldığında encoder tek değer için
+                // ASCII'ye geçmez: değeri tam bir C40 üçlüsüne (2 codeword) tamamlar
+                // ve padding öncesinde UNLATCH uygular.
                 3
             }
         } else {
-            // Buffer empty at end of data. The encoder writes a trailing
-            // UNLATCH before padding unless the data fills the symbol exactly
-            // (must return to ASCII before pad characters, ISO 16022, 5.2.3).
+            // End of data noktasında buffer boştur. Veri symbol'ü tam doldurmuyorsa
+            // encoder padding öncesinde sona UNLATCH yazar; pad karakterlerinden önce
+            // ASCII'ye dönülmelidir (ISO 16022, 5.2.3).
             if self.ctx.symbol_size_left(0).unwrap_or(0) > 0 {
                 1
             } else {
@@ -163,15 +163,14 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
     }
 
     fn step(&mut self) -> Option<StepResult> {
-        // compute optimal chars, only do this when we are at a boundary and if not
-        // already done
+        // En uygun karakterleri yalnızca boundary üzerindeyken ve daha önce
+        // hesaplanmamışsa hesaplar.
         if self.values == 0 && self.unbeatable_reads == 0 {
-            // are the only remaining characters two ascii digits?
+            // Kalan karakterler yalnızca iki ASCII rakamı mı?
             if matches!(self.ctx.rest(), [a, b] if a.is_ascii_digit() && b.is_ascii_digit()) {
-                // The encoder always encodes two trailing digits as a single
-                // ASCII codeword, preceded by an UNLATCH if the symbol still
-                // has room (otherwise the UNLATCH is implicit at the symbol
-                // end). It never keeps them in the C40 stream.
+                // Encoder sondaki iki rakamı her zaman tek bir ASCII codeword olarak
+                // encode eder. Symbol içinde alan varsa önüne UNLATCH gelir; yoksa
+                // UNLATCH symbol sonunda örtüktür. Rakamlar C40 stream içinde tutulmaz.
                 let space_left = self.ctx.symbol_size_left(1)?;
                 self.two_digit_ascii_end = true;
                 self.unbeatable_reads = 2;
@@ -179,7 +178,7 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
                 self.ctx.write(self.two_digit_tail as usize);
             }
             if !self.two_digit_ascii_end {
-                // count number of base set characters coming, watch out for digits
+                // Sıradaki base set karakterlerini sayar; rakamlara dikkat eder.
                 self.unbeatable_reads = unbeatable_strike(self.ctx.rest(), U::in_base_set);
                 self.ctx.write((self.unbeatable_reads / 3) * 2);
             }

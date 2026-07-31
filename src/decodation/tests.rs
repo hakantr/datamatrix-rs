@@ -1,6 +1,6 @@
-/// Module contains test cases found by fuzzing using libfuzzer and afl.
+/// Modül, libfuzzer ve AFL ile fuzzing sırasında bulunan test vakalarını içerir.
 ///
-/// I now believe in magic. Holy. Shit. 10/10.
+/// Artık sihre inanıyorum. İnanılmaz. 10/10.
 use crate::data::{decode_data, encode_data};
 use crate::{EncodationType, SymbolList, SymbolSize};
 
@@ -19,13 +19,18 @@ fn forth_and_back(data: &[u8]) -> Option<SymbolSize> {
     );
     if let Ok(encoded) = encoded {
         let decoded = decode_data(&encoded.0);
-        assert_eq!(decoded.as_deref(), Ok(data), "encoded: {:?}", &encoded);
-        // println!("encoded: {:?}", &encoded);
+        assert_eq!(
+            decoded.as_deref(),
+            Ok(data),
+            "encode edilmiş veri: {:?}",
+            &encoded
+        );
+        // println!("Encode edilmiş veri: {:?}", &encoded);
         Some(encoded.1)
     } else {
         assert!(
             data.len() > 1_555,
-            "should have fit, error is: {:?}",
+            "verinin sığması bekleniyordu; hata: {:?}",
             encoded
         );
         None
@@ -34,31 +39,29 @@ fn forth_and_back(data: &[u8]) -> Option<SymbolSize> {
 
 #[test]
 fn regression_zxing() {
-    // We collect some inputs which were reported to cause
-    // problems with zxing.
+    // zxing ile sorun oluşturduğu bildirilen bazı input'lar burada toplanır.
     //
-    // Our planner works different to zxing's, we do not
-    // pick the same encodation types, so we might not run
-    // into those reported issues. In some cases that is part of the
-    // solution though.
+    // Planner'ımız zxing'den farklı çalışır ve aynı encodation türlerini seçmez.
+    // Bu yüzden bildirilen sorunlarla karşılaşmayabiliriz; bazı durumlarda çözümün
+    // bir bölümü de budur.
 
-    // See https://github.com/zxing/zxing/issues/624
+    // Bkz. https://github.com/zxing/zxing/issues/624
     forth_and_back(b"test TE>240 2 I.E ST>300");
-    // See https://github.com/zxing/zxing/issues/1335
+    // Bkz. https://github.com/zxing/zxing/issues/1335
     forth_and_back(b"<03>TILSIT-MUNSTER<05>Paula");
-    // See https://github.com/zxing/zxing/issues/986
+    // Bkz. https://github.com/zxing/zxing/issues/986
     forth_and_back(b"**10074938*Q6000*P85005-FLT003*RA*0*K110775*VKAR99AL*1T100749381**");
-    // See https://github.com/zxing/zxing/issues/960 and
-    // https://github.com/zxing/zxing/issues/912 and
+    // Bkz. https://github.com/zxing/zxing/issues/960 ve
+    // https://github.com/zxing/zxing/issues/912 ve
     // https://github.com/zxing/zxing/issues/908
     forth_and_back(b"https://test~[******]_");
     forth_and_back(b"abc<->ABCDE");
     forth_and_back(b"<ABCDEFG><ABCDEFGK>");
     forth_and_back(b"*CH/GN1/022/00");
 
-    // See https://github.com/woo-j/OkapiBarcode/issues/80
+    // Bkz. https://github.com/woo-j/OkapiBarcode/issues/80
     forth_and_back(b"02900002608229JDZ*9P0AD8AWFRB");
-    // See https://github.com/woo-j/OkapiBarcode/issues/21
+    // Bkz. https://github.com/woo-j/OkapiBarcode/issues/21
     assert_eq!(forth_and_back(b"9HR3Z6"), Some(SymbolSize::Square12));
 }
 
@@ -72,7 +75,7 @@ fn regression_iec16022() {
 
 #[test]
 fn regression1() {
-    // Generates two big C40
+    // İki büyük C40 üretir.
     forth_and_back(&[50, 32, 32, 252]);
     assert_eq!(
         decode_data(&[51, 239, 19, 58, 187, 237, 254, 254]),
@@ -91,7 +94,7 @@ fn regression2() {
 
 #[test]
 fn regression3() {
-    // A upper shift shift 3 character for C40
+    // C40 için upper shift, shift 3 karakteri.
     forth_and_back(&[32, 74, 224, 245]);
     assert_eq!(
         decode_data(&[230, 22, 90, 187, 209, 254, 235, 118]),
@@ -101,7 +104,7 @@ fn regression3() {
 
 #[test]
 fn regression4() {
-    // A single UNLATCH at the end of data
+    // End of data noktasında tek UNLATCH.
     forth_and_back(&[10, 39, 66, 66, 138]);
     assert_eq!(
         decode_data(&[11, 40, 230, 96, 26, 187, 139, 254]),
@@ -120,7 +123,7 @@ fn regression5() {
 
 #[test]
 fn regression6() {
-    // A UNLATCH at the end of data (X12) mode
+    // X12 mode end of data noktasında bir UNLATCH.
     forth_and_back(&[43, 4, 32, 32, 32, 74, 32, 32]);
     assert_eq!(
         decode_data(&[44, 5, 238, 19, 60, 144, 60, 254]),
@@ -158,7 +161,7 @@ fn regression9() {
 
 #[test]
 fn regression10() {
-    // This one was very slow, planner did consider too many options
+    // Bu vaka çok yavaştı; planner gereğinden fazla seçeneği değerlendiriyordu.
     forth_and_back(&[
         63, 32, 32, 37, 32, 32, 32, 32, 32, 32, 1, 0, 185, 185, 185, 185, 185, 185, 185, 185, 185,
         185, 185, 185, 185, 185, 185, 185, 185, 185, 185, 185, 185, 185, 0, 0, 0, 0, 0, 32, 32, 72,
@@ -168,7 +171,7 @@ fn regression10() {
 
 #[test]
 fn regression11() {
-    // A decoder bug in EDIFACT for end of data situation
+    // EDIFACT end of data durumundaki bir decoder hatası.
     forth_and_back(&[64, 75, 75, 75, 75, 61, 75, 32, 126]);
     assert_eq!(
         decode_data(&[240, 0, 178, 203, 47, 210, 224, 127]),
@@ -178,8 +181,8 @@ fn regression11() {
 
 #[test]
 fn regression12() {
-    // EDIFACT encoding bug, after last triple written no data left, but
-    // <= 2 symbol space, so unlatch not required
+    // EDIFACT encoding hatası: son üçlü yazıldıktan sonra veri kalmaz ancak
+    // symbol alanı <= 2 olduğundan unlatch gerekmez.
     forth_and_back(&[48, 47, 47, 48, 47, 47, 64, 93]);
     assert_eq!(
         decode_data(&[240, 194, 251, 240, 190, 240, 29, 129]),
@@ -189,7 +192,7 @@ fn regression12() {
 
 #[test]
 fn regression13() {
-    // An off-by-one error in the Base256 decoding for >= 250 data len case
+    // Veri uzunluğu >= 250 olduğunda Base256 decoding içindeki off-by-one hatası.
     let input = vec![
         205, 205, 126, 64, 215, 215, 215, 234, 234, 234, 234, 234, 234, 234, 234, 234, 234, 215,
         215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215, 215,
@@ -231,7 +234,7 @@ fn regression13() {
 
 #[test]
 fn regression14() {
-    // This one creates a interesting end of data situation during planning
+    // Bu vaka planning sırasında ilginç bir end of data durumu oluşturur.
     let input = vec![
         75, 89, 91, 91, 91, 77, 37, 89, 91, 75, 216, 75, 75, 37, 91, 75, 91, 91, 91, 91, 91, 75,
         91, 75, 75, 91, 42, 75, 91, 137, 75, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145,
@@ -310,7 +313,7 @@ fn regression18() {
 
 #[test]
 fn regression19() {
-    // C40 encoding did not match planner behavior
+    // C40 encoding ile planner davranışı eşleşmiyordu.
     forth_and_back(&[
         252, 104, 104, 116, 116, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104,
         104, 104, 104, 104, 104, 216, 57, 104, 104, 140, 104, /* 24 */ 37, 77, 37, 89, 91, 91,
@@ -329,7 +332,7 @@ fn regression20() {
 
 #[test]
 fn regression21() {
-    // This one uncovered a bug in text::val_size
+    // Bu vaka text::val_size içindeki bir hatayı ortaya çıkardı.
     forth_and_back(&[
         72, 72, 1, 250, 12, 69, 0, 0, 0, // => 10 bytes ASCII
         98, 114, 98, 98, 98, 98, 205, 105, 66, 98, 98, 114, 98, 98, 66, 98, 32, // => 17 Text

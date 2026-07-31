@@ -14,50 +14,44 @@ const SHIFT3: u8 = 2;
 const UPPER_SHIFT: u8 = 30;
 
 #[inline(always)]
-pub(super) fn low_ascii_to_c40_symbols(
-    ctx: &mut ArrayVec<u8, 6>,
-    ch: u8,
-) -> Result<(), DataEncodingError> {
+pub(super) fn low_ascii_to_c40_symbols(ctx: &mut ArrayVec<u8, 6>, ch: u8) {
     let mut push = |value| {
-        ctx.try_push(value).map_err(|_| {
-            DataEncodingError::InternalError("C40 geçici symbol arabelleği kapasitesini aştı")
-        })
+        if ctx.try_push(value).is_err() {
+            crate::invariant_violation("C40 geçici symbol arabelleği kapasitesini aştı");
+        }
     };
     match ch {
-        // Basic set
-        b' ' => push(3)?,
-        ch @ b'0'..=b'9' => push(ch - b'0' + 4)?,
-        ch @ b'A'..=b'Z' => push(ch - b'A' + 14)?,
+        // Temel set
+        b' ' => push(3),
+        ch @ b'0'..=b'9' => push(ch - b'0' + 4),
+        ch @ b'A'..=b'Z' => push(ch - b'A' + 14),
         // Shift 1 set
         ch @ 0..=31 => {
-            push(SHIFT1)?;
-            push(ch)?;
+            push(SHIFT1);
+            push(ch);
         }
         // Shift 2 set
         ch @ 33..=47 => {
-            push(SHIFT2)?;
-            push(ch - 33)?;
+            push(SHIFT2);
+            push(ch - 33);
         }
         ch @ 58..=64 => {
-            push(SHIFT2)?;
-            push(ch - 58 + 15)?;
+            push(SHIFT2);
+            push(ch - 58 + 15);
         }
         ch @ 91..=95 => {
-            push(SHIFT2)?;
-            push(ch - 91 + 22)?;
+            push(SHIFT2);
+            push(ch - 91 + 22);
         }
         // Shift 3
         ch @ 96..=127 => {
-            push(SHIFT3)?;
-            push(ch - 96)?;
+            push(SHIFT3);
+            push(ch - 96);
         }
         _ => {
-            return Err(DataEncodingError::InternalError(
-                "C40 dönüşümüne 7-bit aralığı dışında karakter verildi",
-            ));
+            crate::invariant_violation("C40 dönüşümüne 7-bit aralığı dışında karakter verildi");
         }
     }
-    Ok(())
 }
 
 pub(super) fn in_base_set(ch: u8) -> bool {
@@ -72,7 +66,7 @@ pub(super) fn val_size(ch: u8) -> u8 {
     }
 }
 
-/// Encode three C40 values into two codewords.
+/// Üç C40 değerini iki codeword olarak encode eder.
 pub(super) fn write_three_values<T: EncodingContext>(ctx: &mut T, c1: u8, c2: u8, c3: u8) {
     let enc = 1600 * c1 as u16 + 40 * c2 as u16 + c3 as u16 + 1;
     ctx.push((enc >> 8) as u8);
@@ -88,80 +82,79 @@ where
     T: EncodingContext,
 {
     if buf.len() > 2 {
-        return Err(DataEncodingError::InternalError(
-            "C40 end-of-data arabelleğinde ikiden fazla symbol kaldı",
-        ));
+        crate::invariant_violation("C40 end-of-data arabelleğinde ikiden fazla symbol kaldı");
     }
 
-    // this method is called after a requested mode switch if and only if
-    // there are characters left
+    // Bu yöntem istenen mode switch sonrasında yalnızca karakter kaldığında çağrılır.
     let mode_switch = ctx.has_more_characters();
     if !ctx.has_more_characters() {
         let size_left = ctx
             .symbol_size_left(buf.len())
             .ok_or(DataEncodingError::TooMuchOrIllegalData)?;
         match (size_left + buf.len(), buf.len()) {
-            // case a) handled by standard loop
-            // case b)
+            // a durumu standart döngü tarafından işlenir.
+            // b durumu
             (2, 2) => {
                 let mut values = buf.iter().copied();
-                let c1 = values.next().ok_or(DataEncodingError::InternalError(
-                    "C40 end-of-data arabelleğinde ilk symbol bulunamadı",
-                ))?;
-                let c2 = values.next().ok_or(DataEncodingError::InternalError(
-                    "C40 end-of-data arabelleğinde ikinci symbol bulunamadı",
-                ))?;
+                let Some(c1) = values.next() else {
+                    crate::invariant_violation(
+                        "C40 end-of-data arabelleğinde ilk symbol bulunamadı",
+                    );
+                };
+                let Some(c2) = values.next() else {
+                    crate::invariant_violation(
+                        "C40 end-of-data arabelleğinde ikinci symbol bulunamadı",
+                    );
+                };
                 write_three_values(ctx, c1, c2, SHIFT1);
                 return Ok(());
             }
-            // case c), explicit UNLATCH, rest ASCII
+            // c durumu: açık UNLATCH, kalan veri ASCII
             (2, 1) => {
                 ctx.push(super::UNLATCH);
                 ctx.set_ascii_until_end();
-                ctx.backup(1)?;
+                ctx.backup(1);
                 return Ok(());
             }
-            // case d), implicit unlatch, then ascii
+            // d durumu: örtük unlatch, ardından ASCII
             (1, 1) if ascii::encoding_size(&[last_ch]) == 1 => {
                 ctx.set_ascii_until_end();
-                ctx.backup(1)?;
+                ctx.backup(1);
                 return Ok(());
             }
             _ => (),
         }
     }
     if !buf.is_empty() {
-        buf.try_push(SHIFT2).map_err(|_| {
-            DataEncodingError::InternalError("C40 end-of-data arabelleği kapasitesini aştı")
-        })?;
-        if buf.len() == 2 {
-            buf.try_push(UPPER_SHIFT).map_err(|_| {
-                DataEncodingError::InternalError("C40 end-of-data arabelleği kapasitesini aştı")
-            })?;
+        if buf.try_push(SHIFT2).is_err() {
+            crate::invariant_violation("C40 end-of-data arabelleği kapasitesini aştı");
+        }
+        if buf.len() == 2 && buf.try_push(UPPER_SHIFT).is_err() {
+            crate::invariant_violation("C40 end-of-data arabelleği kapasitesini aştı");
         }
         let mut values = buf.iter().copied();
-        let c1 = values.next().ok_or(DataEncodingError::InternalError(
-            "C40 end-of-data arabelleğinde ilk symbol bulunamadı",
-        ))?;
-        let c2 = values.next().ok_or(DataEncodingError::InternalError(
-            "C40 end-of-data arabelleğinde ikinci symbol bulunamadı",
-        ))?;
-        let c3 = values.next().ok_or(DataEncodingError::InternalError(
-            "C40 end-of-data arabelleğinde üçüncü symbol bulunamadı",
-        ))?;
+        let Some(c1) = values.next() else {
+            crate::invariant_violation("C40 end-of-data arabelleğinde ilk symbol bulunamadı");
+        };
+        let Some(c2) = values.next() else {
+            crate::invariant_violation("C40 end-of-data arabelleğinde ikinci symbol bulunamadı");
+        };
+        let Some(c3) = values.next() else {
+            crate::invariant_violation("C40 end-of-data arabelleğinde üçüncü symbol bulunamadı");
+        };
         write_three_values(ctx, c1, c2, c3);
-        // if we were at a "end of data" situation but there was too
-        // much space for one of the cases a) - d) above, we need to explicitly
-        // set the new mode, otherwise infinite loop
+        // "end of data" durumundayken yukarıdaki a-d durumlarından biri için
+        // gereğinden fazla alan varsa yeni mode açıkça ayarlanmalıdır; aksi halde
+        // döngü sonsuza girer.
         if !mode_switch {
             ctx.set_ascii_until_end();
         }
     }
     let chars_left = ctx.characters_left();
     if chars_left > 0 {
-        // exactly two remaining digits?
+        // Tam olarak iki rakam mı kaldı?
         if chars_left == 2 && ascii::two_digits_coming(ctx.rest()) {
-            // we can encode them with one ASCII byte, maybe with UNLATCH before
+            // Gerekirse öncesinde UNLATCH kullanarak tek ASCII byte ile encode edilebilir.
             let space_left = ctx
                 .symbol_size_left(1)
                 .ok_or(DataEncodingError::TooMuchOrIllegalData)?;
@@ -188,68 +181,64 @@ where
 pub(super) fn encode_generic<T, F>(ctx: &mut T, low_ascii_write: F) -> Result<(), DataEncodingError>
 where
     T: EncodingContext,
-    F: Fn(&mut ArrayVec<u8, 6>, u8) -> Result<(), DataEncodingError>,
+    F: Fn(&mut ArrayVec<u8, 6>, u8),
 {
     let mut buf = ArrayVec::new();
     let mut last_ch = 0;
     while let Some(ch) = ctx.eat() {
-        // buf empty and only two digits remain?
+        // Buffer boş ve yalnızca iki rakam mı kaldı?
         if buf.is_empty()
             && ch.is_ascii_digit()
             && matches!(ctx.rest(), [ch1] if ch1.is_ascii_digit())
         {
-            ctx.backup(1)?;
-            // then we can finish with:
-            // - 1 codeword if 1 space is left in symbol, or with
-            // - UNLATCH + 1 codeword if 2 spaces are left in the codeword
+            ctx.backup(1);
+            // Bu durumda şu biçimlerde tamamlanabilir:
+            // - symbol içinde 1 alan kaldıysa 1 codeword veya
+            // - codeword içinde 2 alan kaldıysa UNLATCH + 1 codeword.
             break;
         }
-        // encode the character into buf
-        to_vals(&mut buf, ch, &low_ascii_write)?;
+        // Karakteri buffer içine encode eder.
+        to_vals(&mut buf, ch, &low_ascii_write);
         last_ch = ch;
         while buf.len() >= 3 {
             let mut values = buf.iter().copied();
-            let c1 = values.next().ok_or(DataEncodingError::InternalError(
-                "C40 arabelleğinde ilk symbol bulunamadı",
-            ))?;
-            let c2 = values.next().ok_or(DataEncodingError::InternalError(
-                "C40 arabelleğinde ikinci symbol bulunamadı",
-            ))?;
-            let c3 = values.next().ok_or(DataEncodingError::InternalError(
-                "C40 arabelleğinde üçüncü symbol bulunamadı",
-            ))?;
+            let Some(c1) = values.next() else {
+                crate::invariant_violation("C40 arabelleğinde ilk symbol bulunamadı");
+            };
+            let Some(c2) = values.next() else {
+                crate::invariant_violation("C40 arabelleğinde ikinci symbol bulunamadı");
+            };
+            let Some(c3) = values.next() else {
+                crate::invariant_violation("C40 arabelleğinde üçüncü symbol bulunamadı");
+            };
             write_three_values(ctx, c1, c2, c3);
             buf.drain(0..3).for_each(core::mem::drop);
         }
-        if ctx.maybe_switch_mode()? {
+        if ctx.maybe_switch_mode() {
             break;
         }
     }
     handle_end(ctx, last_ch, buf)
 }
 
-fn to_vals<F>(
-    buf: &mut ArrayVec<u8, 6>,
-    ch: u8,
-    low_ascii_write: F,
-) -> Result<usize, DataEncodingError>
+fn to_vals<F>(buf: &mut ArrayVec<u8, 6>, ch: u8, low_ascii_write: F) -> usize
 where
-    F: Fn(&mut ArrayVec<u8, 6>, u8) -> Result<(), DataEncodingError>,
+    F: Fn(&mut ArrayVec<u8, 6>, u8),
 {
     let len_before = buf.len();
     match ch {
-        ch @ 0..=127 => low_ascii_write(buf, ch)?,
+        ch @ 0..=127 => low_ascii_write(buf, ch),
         ch @ 128..=255 => {
-            buf.try_push(SHIFT2).map_err(|_| {
-                DataEncodingError::InternalError("C40 geçici symbol arabelleği kapasitesini aştı")
-            })?;
-            buf.try_push(UPPER_SHIFT).map_err(|_| {
-                DataEncodingError::InternalError("C40 geçici symbol arabelleği kapasitesini aştı")
-            })?;
-            low_ascii_write(buf, ch - 128)?;
+            if buf.try_push(SHIFT2).is_err() || buf.try_push(UPPER_SHIFT).is_err() {
+                crate::invariant_violation("C40 geçici symbol arabelleği kapasitesini aştı");
+            }
+            low_ascii_write(buf, ch - 128);
         }
     };
-    Ok(buf.len() - len_before)
+    let Some(written) = buf.len().checked_sub(len_before) else {
+        crate::invariant_violation("C40 arabellek uzunluğu beklenmedik biçimde azaldı");
+    };
+    written
 }
 
 pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncodingError> {
@@ -261,7 +250,7 @@ fn vals(data: &[u8]) -> Vec<u8> {
     let mut vals = Vec::new();
     for ch in data.iter().cloned() {
         let mut buf = ArrayVec::new();
-        let _ = to_vals(&mut buf, ch, low_ascii_to_c40_symbols);
+        let _written = to_vals(&mut buf, ch, low_ascii_to_c40_symbols);
         vals.extend(buf.iter());
     }
     vals
@@ -315,8 +304,8 @@ fn test_enc_shift3_set() {
 #[test]
 fn test_shift_upper() {
     let vals = vals(b"\x80\xFF\xa0");
-    // first is 1, 30, 0, 0
-    // second is 1, 30, 2, 31
-    // third is 1, 30, 3
+    // İlk değer 1, 30, 0, 0'dır.
+    // İkinci değer 1, 30, 2, 31'dir.
+    // Üçüncü değer 1, 30, 3'tür.
     assert_eq!(vals, vec![1, 30, 0, 0, 1, 30, 2, 31, 1, 30, 3]);
 }

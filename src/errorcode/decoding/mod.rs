@@ -7,22 +7,21 @@ use alloc::{vec, vec::Vec};
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Signals a failure when correcting errors.
+/// Hatalar düzeltilirken oluşan başarısızlığı belirtir.
 ///
-/// The specific variant is not relevant for practice.
+/// Belirli variant pratik kullanım açısından önemli değildir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorDecodingError {
     TooManyErrors,
-    /// Error locations were found outside of the codeword.
+    /// Hata konumları codeword dışında bulundu.
     ///
-    /// This usually means there were a lot of transmission errors, uncorrectable.
+    /// Bu genellikle düzeltilemeyecek kadar çok aktarım hatası olduğu anlamına gelir.
     ErrorsOutsideRange,
     Malfunction,
     DataSize {
         expected: usize,
         actual: usize,
     },
-    InvalidSetup(&'static str),
 }
 
 impl core::fmt::Display for ErrorDecodingError {
@@ -39,9 +38,6 @@ impl core::fmt::Display for ErrorDecodingError {
                 f,
                 "Reed–Solomon decoder {expected} codeword bekliyordu, {actual} verildi"
             ),
-            Self::InvalidSetup(message) => {
-                write!(f, "Reed–Solomon decoder yapılandırması geçersiz: {message}")
-            }
         }
     }
 }
@@ -50,8 +46,8 @@ impl core::error::Error for ErrorDecodingError {}
 
 pub use syndrome_based::decode;
 
-/// Evaluate the polynomical given by coefficients `c` at
-/// x, x^2, x^3, ... and write the result to `out` in that order.
+/// Katsayıları `c` ile verilen polynomial'ı x, x^2, x^3, ... noktalarında
+/// değerlendirir ve sonuçları bu sırayla `out` içine yazar.
 fn primitive_element_evaluation<T, I>(c: I, out: &mut [GF]) -> bool
 where
     T: Into<GF> + Copy,
@@ -72,7 +68,7 @@ where
     errors
 }
 
-/// Find the zeros of a polynomial given by the coefficients in `c`.
+/// Katsayıları `c` içinde verilen polynomial'ın sıfırlarını bulur.
 fn chien_search<T: Into<GF> + Copy>(c: &[T]) -> Vec<GF> {
     let mut out = vec![];
     if c.is_empty() {
@@ -100,11 +96,11 @@ fn chien_search<T: Into<GF> + Copy>(c: &[T]) -> Vec<GF> {
     out
 }
 
-/// Solve the linear system `matrix` * x = `b` for x using a "pivoted" LU decomposition.
+/// `matrix` * x = `b` doğrusal sistemini "pivoted" LU decomposition kullanarak x için çözer.
 ///
-/// The matrix must be square.
+/// Matrix kare olmalıdır.
 ///
-/// Returns true if a solution was found.
+/// Çözüm bulunursa true döndürür.
 #[allow(unused)]
 fn solve(mat: &mut [GF], b: &mut [GF], row_stride: usize) -> bool {
     let n = b.len();

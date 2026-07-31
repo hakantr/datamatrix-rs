@@ -1,108 +1,122 @@
 # datamatrix-rs
 
 [![crates.io](https://img.shields.io/crates/d/datamatrix.svg)](https://crates.io/crates/datamatrix)
-[![Documentation](https://docs.rs/datamatrix/badge.svg)](https://docs.rs/datamatrix)
-![License](https://img.shields.io/crates/l/datamatrix)
+[![Dokümantasyon](https://docs.rs/datamatrix/badge.svg)](https://docs.rs/datamatrix)
+![Lisans](https://img.shields.io/crates/l/datamatrix)
 
-Data Matrix (ECC 200) decoding and encoding library with an optimizing encoder.
+Optimizing encoder içeren Data Matrix (ECC 200) decoding ve encoding kütüphanesi.
 
 <p align="center">
-  <img src="src/datamatrix-rs.png" alt="Data Matrix encoding 'datamatrix-rs'">
+  <img src="src/datamatrix-rs.png" alt="'datamatrix-rs' Data Matrix encoding">
 </p>
 
-This library features an optimizing, linear time encoder which produces an
-encoding with the smallest possible number of codewords.
+Bu kütüphane mümkün olan en az codeword sayısıyla encoding üreten, optimizing ve
+doğrusal zamanda çalışan bir encoder içerir.
 
-The Data Matrix standard (ISO/IEC 16022:2006) contains a heuristic to decide
-which encoding modes to use, and in most cases that works. A straightforward
-implementation will not have linear runtime, though. This library instead casts
-the mode selection as a shortest path problem over the encodation modes and
-solves it with a forward sweep that keeps, after each input character, only the
-cheapest plan per mode (dominance pruning). This bounds the work per character
-by a constant and yields linear runtime.
+Data Matrix standardı (ISO/IEC 16022:2006), kullanılacak encoding mode'larını
+seçmek için çoğu durumda çalışan bir heuristic içerir. Ancak doğrudan bir
+implementasyon doğrusal runtime sunmaz. Bu kütüphane mode seçimini encodation
+mode'ları üzerinde shortest path problemi olarak ele alır. Her input karakterinden
+sonra mode başına yalnızca en düşük cost'lu planı tutan ileri taramayla (dominance
+pruning) problemi çözer. Böylece karakter başına iş sabit bir değerle sınırlanır ve
+doğrusal runtime elde edilir.
 
-The optimizer is special about this implementation, most implementations use the
-heuristic. See the list of related projects below for credits and references to
-other open source Data Matrix libraries.
+Bu implementasyonu özel kılan optimizer'dır; çoğu implementasyon heuristic
+kullanır. Katkı kaynakları ve diğer açık kaynaklı Data Matrix kütüphaneleri için
+aşağıdaki ilgili projeler listesine bakın.
 
-## Example
+## Örnek
 
 ```rust
-let code = DataMatrix::encode(
-    b"Hello, World!",
-    SymbolList::default(),
-).unwrap();
+use datamatrix::{DataMatrix, SymbolList};
 
-// print an "ASCII art" version
-print!("{}", code.bitmap().unicode());
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let code = DataMatrix::encode(
+        b"Hello, World!",
+        SymbolList::default(),
+    )?;
+
+    // "ASCII art" sürümünü yazdırır.
+    print!("{}", code.bitmap().unicode());
+    Ok(())
+}
 ```
 
-The library contains helpers for generating other output formats. Example code can be found
-in `examples/`. The extra effort for this last rendering step is usually low and
-this approach allows high flexibility.
+Kütüphane diğer çıktı formatlarını üretmek için yardımcılar içerir. Örnek kodlar
+`examples/` dizinindedir. Son rendering adımının ek maliyeti genellikle düşüktür ve
+bu yaklaşım yüksek esneklik sağlar.
 
-## Status
+## Hata ve panik sözleşmesi
 
-- [x] Encodation modes ASCII, Base256, C40, Text, X12, EDIFACT implemented.
-- [x] Optimizer for switching between encodation modes to find a minimal
-      encodation size.
-- [x] Data part decoding.
-- [x] Fuzzed data de- and encoding (_no issues after 48h_)
-- [x] Check the open bug reports in other implementations.
-- [x] Reed Solomon de-/encoder.
+Kamuya açık fonksiyonlar geçersiz dış girdi, desteklenmeyen seçenek veya normal
+çalışma hatası nedeniyle kasıtlı olarak paniklemez. Bu durumlar yapılandırılmış
+`Result<T, E>` ile bildirilir. `Bitmap::new` ve
+`MatrixMap::new_with_codewords` gibi sınır kurucuları girdiyi bir kez doğrular;
+private alanlarla korunan geçerli değerler üzerindeki `bitmap`, `codewords`,
+`path`, `width` ve `height` gibi işlemler doğrudan sonuç döndürür.
+
+Panik yalnızca kütüphanenin private durumunu koruyan bir iç değişmezin bozulduğunu,
+yani bir programlama hatasını bildirir. Bu noktalar tek bir açıklamalı iç-değişmez
+mekanizmasında toplanmıştır. Bellek tükenmesi, stack overflow ve bağımlılıkların
+panikleri bu sözleşmenin dışındadır.
+
+## Durum
+
+- [x] ASCII, Base256, C40, Text, X12 ve EDIFACT encodation mode'ları.
+- [x] Asgari encodation size için encodation mode'ları arasında geçiş yapan optimizer.
+- [x] Data bölümü decoding.
+- [x] Fuzzing uygulanmış data decoding ve encoding (_48 saat sonunda sorun yok_).
+- [x] Diğer implementasyonlardaki açık hata bildirimlerinin denetlenmesi.
+- [x] Reed–Solomon decoder/encoder.
 - [x] Tile placement encoding.
-- [x] Helpers for rendering
-- [x] Implement [Extended Rectangular Data Matrix (DMRE)](https://e-d-c.info/projekte/dmre.html)
-      defined in ISO 21471 which adds more rectangular symbol sizes
+- [x] Rendering yardımcıları.
+- [x] ISO 21471 ile tanımlanan ve yeni rectangular symbol size değerleri ekleyen
+      [Extended Rectangular Data Matrix (DMRE)](https://e-d-c.info/projekte/dmre.html).
 - [x] Tile placement decoding.
-- [ ] Visual detection in images.
-- [ ] Detailed decoder output.
-- [ ] ECI support. This has progressed as far as I could get without buying the
-      standards for this (several hundred dollars).
+- [x] Sınırlı ECI desteği; `extended_eci` feature ek charset'leri etkinleştirir.
+- [ ] Görsellerde visual detection.
+- [ ] Ayrıntılı decoder çıktısı.
 
-Things in consideration for after that:
+Bunlardan sonrası için değerlendirilenler:
 
 - "Structured Append"
 - "Reader Programming"
 
-## Disclaimer
+## Açıklama
 
-Since the encoded data is padded to fill up the remaining space in a Data Matrix
-symbol, the symbol generated by this library will in many cases not be smaller
-compared to an optimizer based on the heuristic defined in the specification.
-What it achieves however in any case is a linear encoding time, and it avoids
-some of the bugs which can be attributed to using the heuristic (see open
-bugs in zxing and OkapiBarcode). And, of course, there _are_ cases where it will
-return a smaller symbol although admittedly no thorough study of this has been
-done.
+Encoded data, Data Matrix symbol içindeki kalan alanı doldurmak için padded
+olduğundan bu kütüphanenin ürettiği symbol çoğu durumda specification içindeki
+heuristic tabanlı optimizer'ın sonucundan daha küçük olmaz. Bununla birlikte her
+durumda doğrusal encoding süresi sağlar ve heuristic kullanımından kaynaklanabilen
+bazı hataları önler (zxing ve OkapiBarcode açık hatalarına bakın). Kapsamlı bir
+çalışma yapılmamış olsa da daha küçük symbol döndürdüğü durumlar da vardır.
 
-## Related projects
+## İlgili projeler
 
-The following projects were invaluable for learning from their implementation
-and stealing some of their test cases and bug reports.
+Aşağıdaki projelerin implementasyonları, test vakaları ve hata bildirimleri çok
+değerli kaynaklar olmuştur.
 
-- [zxing](https://github.com/zxing/zxing) is a Google library to encode
-  and decode multiple 1D and 2D codes including Data Matrix. The core part
-  is written in Java. It uses the heuristic from the specification.
-- [barcode4j](http://barcode4j.sourceforge.net/) is a predecessor (?) of zxing,
-  the Data Matrix code was forked into zxing.
-- [libdmtx](https://github.com/dmtx/libdmtx) is the most prominent open source
-  C library for encoding and decoding Data Matrix. It has a more limited optimizer
-  compared to the specification, but it can also decode Data Matric codes from images.
-- [zxing-cpp](https://github.com/nu-book/zxing-cpp) is a C++ port of zxing, it
-  also contains some improvements.
-- [OkapiBarcode](https://github.com/woo-j/OkapiBarcode) is a Java library with
-  Data Matrix encoding support, among dozens of other codes! The implementation
-  seems to follow the standard.
-- OkapiBarcode is ported from (?) the [zint](http://zint.org.uk) C library.
-  Ports to Pascal and C# are referenced on their website. Off topic: There
-  are encoders for some nice vintage codes and discontinued commercial codes, see "Extras"
-  on the website.
-- [postscriptbarcode](https://github.com/bwipp/postscriptbarcode) implements encoding of
-  several 1D and 2D codes using only PostScript. It is also available as a LaTeX
-  package. [Port to JavaScript](https://github.com/metafloor/bwip-js).
-- A [perl module](https://github.com/mstratman/Barcode-DataMatrix) for encoding.
-- [iec16022](https://github.com/rdoeffinger/iec16022) is a Data Matrix encoder originally
-  written by Andrews & Arnold Ltd. but is now maintained by Reimar Döffinger. It has a similar
-  optimizing encoder.
-
+- [zxing](https://github.com/zxing/zxing), Data Matrix dahil çeşitli 1D ve 2D
+  code'ları encode/decode eden Google kütüphanesidir. Ana bölümü Java ile yazılmıştır
+  ve specification içindeki heuristic'i kullanır.
+- [barcode4j](http://barcode4j.sourceforge.net/), zxing'in öncülüdür (?); Data Matrix
+  kodu zxing içine fork edilmiştir.
+- [libdmtx](https://github.com/dmtx/libdmtx), Data Matrix encoding ve decoding için
+  en bilinen açık kaynaklı C kütüphanesidir. Specification'a göre daha sınırlı bir
+  optimizer içerir ancak görsellerdeki Data Matrix code'larını da decode edebilir.
+- [zxing-cpp](https://github.com/nu-book/zxing-cpp), zxing'in bazı iyileştirmeler de
+  içeren C++ port'udur.
+- [OkapiBarcode](https://github.com/woo-j/OkapiBarcode), onlarca başka code yanında
+  Data Matrix encoding desteği sunan Java kütüphanesidir. Implementasyon standardı
+  izliyor görünmektedir.
+- OkapiBarcode, [zint](http://zint.org.uk) C kütüphanesinden port edilmiştir (?).
+  Web sitesinde Pascal ve C# port'larına referans verilir. Konu dışı bir not: Web
+  sitesindeki "Extras" bölümünde güzel vintage code'lar ve kullanımdan kalkmış ticari
+  code'lar için encoder'lar vardır.
+- [postscriptbarcode](https://github.com/bwipp/postscriptbarcode), yalnızca PostScript
+  kullanarak çeşitli 1D ve 2D code'ları encode eder. LaTeX paketi ve
+  [JavaScript port'u](https://github.com/metafloor/bwip-js) da vardır.
+- Encoding için bir [Perl modülü](https://github.com/mstratman/Barcode-DataMatrix).
+- [iec16022](https://github.com/rdoeffinger/iec16022), ilk olarak Andrews & Arnold Ltd.
+  tarafından yazılan ve artık Reimar Döffinger tarafından sürdürülen Data Matrix
+  encoder'dır. Benzer bir optimizing encoder içerir.

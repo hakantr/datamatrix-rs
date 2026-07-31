@@ -10,12 +10,12 @@ pub(super) struct Base256Plan<T: ContextInformation> {
 
 impl<T: ContextInformation> Base256Plan<T> {
     pub(super) fn new(mut ctx: T) -> Self {
-        // for the length byte
+        // Uzunluk byte'ı için
         ctx.write(1);
         Self {
             ctx,
             written: 0,
-            cost: 1.into(), // initial length byte
+            cost: 1.into(), // Başlangıç uzunluk byte'ı
         }
     }
 
@@ -39,7 +39,7 @@ impl<T: ContextInformation> Plan for Base256Plan<T> {
         if !self.ctx.has_more_characters() {
             let left = self.ctx.symbol_size_left(0).unwrap_or(1);
             if left > 0 && self.written >= 250 {
-                // we must use 1 extra byte for the length
+                // Uzunluk için fazladan 1 byte kullanılmalıdır.
                 return self.cost + 1;
             }
         }
@@ -49,7 +49,7 @@ impl<T: ContextInformation> Plan for Base256Plan<T> {
     fn write_unlatch(&self) -> T {
         let mut ctx = self.ctx.clone();
         if self.written >= 250 {
-            // extra byte for big length
+            // Büyük uzunluk için ek byte
             ctx.write(1);
         }
         ctx

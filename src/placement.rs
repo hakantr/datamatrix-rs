@@ -1,13 +1,12 @@
-//! Arrangement of bits in a Data Matrix symbol.
+//! Data Matrix symbol içindeki bitlerin yerleşimi.
 //!
-//! The module contains the struct [MatrixMap] which can be used to
-//! to iterate over the bit
-//! positions of each codeword in the final symbol, i.e., how the black squares are
-//! mapped to the encoded data as bytes. This is used to write
-//! the encoded data into a bitmap, and also to read it from a bitmap.
+//! Modül, son symbol içindeki her codeword'ün bit konumlarını dolaşmak için
+//! kullanılabilen [MatrixMap] yapısını içerir. Başka bir deyişle siyah karelerin
+//! byte olarak encoded data ile nasıl eşlendiğini tanımlar. Encoded data'yı bitmap'e
+//! yazmak ve bitmap'ten okumak için kullanılır.
 //!
-//! An abstract bitmap struct [Bitmap] is the final output of encoding and the input
-//! for decoding. It also contains helpers for rendering.
+//! Soyut bitmap yapısı [Bitmap], encoding işleminin son çıktısı ve decoding
+//! işleminin input'udur. Rendering yardımcılarını da içerir.
 use alloc::{string::String, vec, vec::Vec};
 
 use crate::symbol_size::{SymbolList, SymbolSize};
@@ -21,22 +20,20 @@ pub use path::PathSegment;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BitmapConversionError {
-    /// The alignment pattern is not correct.
+    /// Alignment pattern geçersizdir.
     Alignment,
-    /// The padding pattern is not correct.
+    /// Padding pattern geçersizdir.
     Padding,
-    /// The width was zero.
+    /// Genişlik sıfırdır.
     ZeroWidth,
-    /// The provided data does not fit the given width.
+    /// Verilen data belirtilen genişliğe uymaz.
     DataSize,
-    /// No symbol size was found matching the data size.
+    /// Data boyutuyla eşleşen symbol size bulunamadı.
     SymbolSize,
     /// Codeword sayısı seçilen symbol size ile eşleşmiyor.
     CodewordCount { expected: usize, actual: usize },
     /// Boyut hesabı hedef mimarinin sınırlarını aştı.
     ArithmeticOverflow,
-    /// Kütüphane içindeki bir yerleştirme değişmezi bozuldu.
-    InternalError(&'static str),
 }
 
 impl core::fmt::Display for BitmapConversionError {
@@ -52,20 +49,19 @@ impl core::fmt::Display for BitmapConversionError {
                 "codeword sayısı geçersiz: {expected} bekleniyordu, {actual} verildi"
             ),
             Self::ArithmeticOverflow => f.write_str("bitmap boyut hesabında taşma oluştu"),
-            Self::InternalError(message) => write!(f, "yerleştirme işlemi başarısız: {message}"),
         }
     }
 }
 
 impl core::error::Error for BitmapConversionError {}
 
-/// Abstract "bit" type used in [MatrixMap].
+/// [MatrixMap] içinde kullanılan soyut "bit" türü.
 pub trait Bit: Clone + Copy + PartialEq + core::fmt::Debug {
     const LOW: Self;
     const HIGH: Self;
 }
 
-/// Representation of the bits in a Data Matrix symbol without alignment patterns.
+/// Data Matrix symbol bitlerinin alignment pattern olmadan gösterimi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixMap<B: Bit> {
     entries: Vec<B>,
@@ -77,28 +73,33 @@ pub struct MatrixMap<B: Bit> {
 }
 
 impl<M: Bit> MatrixMap<M> {
-    /// Create a new, empty matrix for the given symbol size.
-    pub fn new(size: SymbolSize) -> Result<Self, BitmapConversionError> {
+    /// Verilen symbol size için yeni ve boş bir matrix oluşturur.
+    pub fn new(size: SymbolSize) -> Self {
         let setup = size.block_setup();
         let w = setup.content_width();
         let h = setup.content_height();
-        let len = w
-            .checked_mul(h)
-            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-        Ok(Self {
+        let Some(len) = w.checked_mul(h) else {
+            crate::invariant_violation("symbol içerik boyutu hedef mimarinin sınırlarını aştı");
+        };
+        Self {
             entries: vec![M::LOW; len],
             width: w,
             height: h,
             extra_vertical_alignments: setup.extra_vertical_alignments,
             extra_horizontal_alignments: setup.extra_horizontal_alignments,
             has_padding: size.has_padding_modules(),
-        })
+        }
     }
 
-    /// Read the data from a bitmap.
+    /// Data'yı bitmap'ten okur.
     ///
-    /// The argument `bits` shall reprersent a rectangular image, enumerated starting
-    /// from the top left corner in row-major order. The alignment patterns must be included.
+    /// `bits` argümanı, sol üst köşeden başlayarak row-major sırada numaralanmış
+    /// dikdörtgen bir görseli temsil etmelidir. Alignment pattern dahil olmalıdır.
+    ///
+    /// # Hatalar
+    ///
+    /// Genişlik sıfırsa, data genişlikle uyuşmuyorsa, symbol size bulunamıyorsa
+    /// veya alignment/padding pattern geçersizse hata döndürür.
     pub fn try_from_bits(
         bits: &[M],
         width: usize,
@@ -140,7 +141,7 @@ impl<M: Bit> MatrixMap<M> {
                 return Err(BitmapConversionError::DataSize);
             }
 
-            // first row must be alternating, the one before all HIGH
+            // İlk satır dönüşümlü, ondan önceki satırın tamamı HIGH olmalıdır.
             let first_row = row_chunk
                 .get(..width)
                 .ok_or(BitmapConversionError::DataSize)?;
@@ -232,133 +233,123 @@ impl<M: Bit> MatrixMap<M> {
         Ok((matrix_map, size))
     }
 
-    /// Write a 4x4 padding pattern in the lower right corner if needed.
-    pub fn write_padding(&mut self) -> Result<(), BitmapConversionError> {
+    /// Gerekiyorsa sağ alt köşeye 4×4 padding pattern yazar.
+    pub fn write_padding(&mut self) {
         if self.has_padding {
-            let first_row =
-                self.height
-                    .checked_sub(2)
-                    .ok_or(BitmapConversionError::InternalError(
-                        "padding için matrix yüksekliği yetersiz",
-                    ))?;
-            let first_col =
-                self.width
-                    .checked_sub(2)
-                    .ok_or(BitmapConversionError::InternalError(
-                        "padding için matrix genişliği yetersiz",
-                    ))?;
-            let last_row =
-                self.height
-                    .checked_sub(1)
-                    .ok_or(BitmapConversionError::InternalError(
-                        "padding için matrix yüksekliği yetersiz",
-                    ))?;
-            let last_col =
-                self.width
-                    .checked_sub(1)
-                    .ok_or(BitmapConversionError::InternalError(
-                        "padding için matrix genişliği yetersiz",
-                    ))?;
-            self.set_bit(first_row, first_col, M::HIGH)?;
-            self.set_bit(last_row, last_col, M::HIGH)?;
+            let Some(first_row) = self.height.checked_sub(2) else {
+                crate::invariant_violation("padding için matrix yüksekliği yetersiz");
+            };
+            let Some(first_col) = self.width.checked_sub(2) else {
+                crate::invariant_violation("padding için matrix genişliği yetersiz");
+            };
+            let Some(last_row) = self.height.checked_sub(1) else {
+                crate::invariant_violation("padding için matrix yüksekliği yetersiz");
+            };
+            let Some(last_col) = self.width.checked_sub(1) else {
+                crate::invariant_violation("padding için matrix genişliği yetersiz");
+            };
+            self.set_bit(first_row, first_col, M::HIGH);
+            self.set_bit(last_row, last_col, M::HIGH);
         }
-        Ok(())
     }
 
-    /// Get the content of the matrix as a bitmap with alignment patterns added.
-    pub fn bitmap(&self) -> Result<Bitmap<M>, BitmapConversionError> {
-        let h = self
+    /// Matrix içeriğini alignment pattern eklenmiş bitmap olarak döndürür.
+    pub fn bitmap(&self) -> Bitmap<M> {
+        let Some(h) = self
             .extra_horizontal_alignments
             .checked_mul(2)
             .and_then(|extra| self.height.checked_add(2)?.checked_add(extra))
-            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-        let w = self
+        else {
+            crate::invariant_violation("bitmap yüksekliği hesaplanırken taşma oluştu");
+        };
+        let Some(w) = self
             .extra_vertical_alignments
             .checked_mul(2)
             .and_then(|extra| self.width.checked_add(2)?.checked_add(extra))
-            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-        let len = h
-            .checked_mul(w)
-            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        else {
+            crate::invariant_violation("bitmap genişliği hesaplanırken taşma oluştu");
+        };
+        let Some(len) = h.checked_mul(w) else {
+            crate::invariant_violation("bitmap alanı hesaplanırken taşma oluştu");
+        };
         let mut bits = vec![M::LOW; len];
 
-        // draw horizontal alignments
+        // Yatay alignment öğelerini çizer.
         let extra_hor = self.extra_horizontal_alignments;
         let blk_h = (h - 2 * (extra_hor + 1)) / (extra_hor + 1);
         for i in 0..extra_hor {
             let rows_before = 1 + (blk_h + 2) * i + blk_h;
             for j in 0..w {
-                set_bitmap_bit(&mut bits, w, rows_before, j, M::HIGH)?;
+                set_bitmap_bit(&mut bits, w, rows_before, j, M::HIGH);
             }
             for j in (0..w).step_by(2) {
-                set_bitmap_bit(&mut bits, w, rows_before + 1, j, M::HIGH)?;
+                set_bitmap_bit(&mut bits, w, rows_before + 1, j, M::HIGH);
             }
         }
 
-        // draw vertical alignments
+        // Dikey alignment öğelerini çizer.
         let extra_ver = self.extra_vertical_alignments;
         let blk_w = (w - 2 * (extra_ver + 1)) / (extra_ver + 1);
         for j in 0..extra_ver {
             let cols_before = 1 + (blk_w + 2) * j + blk_w;
             for i in 1..h {
-                set_bitmap_bit(&mut bits, w, i, cols_before + 1, M::HIGH)?;
+                set_bitmap_bit(&mut bits, w, i, cols_before + 1, M::HIGH);
             }
             for i in (1..h).step_by(2) {
-                set_bitmap_bit(&mut bits, w, i, cols_before, M::HIGH)?;
+                set_bitmap_bit(&mut bits, w, i, cols_before, M::HIGH);
             }
         }
 
         for j in 0..w {
-            // draw bottom alignment
-            set_bitmap_bit(&mut bits, w, h - 1, j, M::HIGH)?;
+            // Alt alignment öğesini çizer.
+            set_bitmap_bit(&mut bits, w, h - 1, j, M::HIGH);
         }
         for j in (0..w).step_by(2) {
-            // draw top alignment
-            set_bitmap_bit(&mut bits, w, 0, j, M::HIGH)?;
+            // Üst alignment öğesini çizer.
+            set_bitmap_bit(&mut bits, w, 0, j, M::HIGH);
         }
         for i in 0..h {
-            // draw left alignment
-            set_bitmap_bit(&mut bits, w, i, 0, M::HIGH)?;
+            // Sol alignment öğesini çizer.
+            set_bitmap_bit(&mut bits, w, i, 0, M::HIGH);
         }
         for i in (1..h).step_by(2) {
-            // draw right alignment
-            set_bitmap_bit(&mut bits, w, i, w - 1, M::HIGH)?;
+            // Sağ alignment öğesini çizer.
+            set_bitmap_bit(&mut bits, w, i, w - 1, M::HIGH);
         }
 
-        // copy the data
+        // Data'yı kopyalar.
         for (b_i, b) in self.entries.iter().enumerate() {
             let mut i = b_i / self.width;
             i += 1 + (i / blk_h) * 2;
             let mut j = b_i % self.width;
             j += 1 + (j / blk_w) * 2;
-            set_bitmap_bit(&mut bits, w, i, j, *b)?;
+            set_bitmap_bit(&mut bits, w, i, j, *b);
         }
 
-        Bitmap::new(bits, w)
+        Bitmap { width: w, bits }
     }
 
-    /// Traverse the symbol in codeword order and call the function for each position.
+    /// Symbol'ü codeword sırasında dolaşır ve her konum için fonksiyonu çağırır.
     ///
-    /// The codeword index is given as the first
-    /// argument to `visit`.
+    /// Codeword indeksi `visit` fonksiyonuna ilk argüman olarak verilir.
     ///
-    /// The second argument of `visit` contains the bits of the codewords, most significant
-    /// first.
-    pub fn traverse_mut<F>(&mut self, mut visit_fn: F) -> Result<(), BitmapConversionError>
+    /// `visit` fonksiyonunun ikinci argümanı, en anlamlı bit önce olacak biçimde
+    /// codeword bitlerini içerir.
+    pub fn traverse_mut<F>(&mut self, mut visit_fn: F)
     where
-        F: FnMut(usize, [&mut M; 8]) -> Result<(), BitmapConversionError>,
+        F: FnMut(usize, [&mut M; 8]),
     {
         IndexTraversal {
             width: self.width,
             height: self.height,
         }
-        .run(|idx, indices| visit_fn(idx, self.bits_mut(indices)?))
+        .run(|idx, indices| visit_fn(idx, self.bits_mut(indices)))
     }
 
-    /// Nonmutable version of [traverse_mut](Self::traverse_mut).
-    pub fn traverse<F>(&self, mut visit_fn: F) -> Result<(), BitmapConversionError>
+    /// [traverse_mut](Self::traverse_mut) yönteminin immutable sürümü.
+    pub fn traverse<F>(&self, mut visit_fn: F)
     where
-        F: FnMut(usize, [M; 8]) -> Result<(), BitmapConversionError>,
+        F: FnMut(usize, [M; 8]),
     {
         IndexTraversal {
             width: self.width,
@@ -367,76 +358,59 @@ impl<M: Bit> MatrixMap<M> {
         .run(|idx, indices| {
             let [i0, i1, i2, i3, i4, i5, i6, i7] = indices;
             let values = [
-                self.entry(i0)?,
-                self.entry(i1)?,
-                self.entry(i2)?,
-                self.entry(i3)?,
-                self.entry(i4)?,
-                self.entry(i5)?,
-                self.entry(i6)?,
-                self.entry(i7)?,
+                self.entry(i0),
+                self.entry(i1),
+                self.entry(i2),
+                self.entry(i3),
+                self.entry(i4),
+                self.entry(i5),
+                self.entry(i6),
+                self.entry(i7),
             ];
             visit_fn(idx, values)
         })
     }
 
-    fn entry(&self, index: usize) -> Result<M, BitmapConversionError> {
-        self.entries
-            .get(index)
-            .copied()
-            .ok_or(BitmapConversionError::InternalError(
-                "codeword yerleşim konumu matrix sınırlarının dışında",
-            ))
+    fn entry(&self, index: usize) -> M {
+        let Some(value) = self.entries.get(index).copied() else {
+            crate::invariant_violation("codeword yerleşim konumu matrix sınırlarının dışında");
+        };
+        value
     }
 
-    fn set_bit(
-        &mut self,
-        row: usize,
-        column: usize,
-        value: M,
-    ) -> Result<(), BitmapConversionError> {
-        let index = bitmap_index(self.width, row, column)?;
-        let bit = self
-            .entries
-            .get_mut(index)
-            .ok_or(BitmapConversionError::InternalError(
-                "matrix konumu sınırların dışında",
-            ))?;
+    fn set_bit(&mut self, row: usize, column: usize, value: M) {
+        let index = bitmap_index(self.width, row, column);
+        let Some(bit) = self.entries.get_mut(index) else {
+            crate::invariant_violation("matrix konumu sınırların dışında");
+        };
         *bit = value;
-        Ok(())
     }
 
-    /// Get mutable references to the indices specified in `indices`.
-    fn bits_mut(&mut self, indices: [usize; 8]) -> Result<[&mut M; 8], BitmapConversionError> {
-        self.entries.get_disjoint_mut(indices).map_err(|_| {
-            BitmapConversionError::InternalError(
-                "codeword bit konumları geçersiz veya birbiriyle çakışıyor",
-            )
-        })
+    /// `indices` içinde belirtilen indekslere mutable referanslar döndürür.
+    fn bits_mut(&mut self, indices: [usize; 8]) -> [&mut M; 8] {
+        let Ok(bits) = self.entries.get_disjoint_mut(indices) else {
+            crate::invariant_violation("codeword bit konumları geçersiz veya birbiriyle çakışıyor");
+        };
+        bits
     }
 }
 
-fn bitmap_index(width: usize, row: usize, column: usize) -> Result<usize, BitmapConversionError> {
-    row.checked_mul(width)
+fn bitmap_index(width: usize, row: usize, column: usize) -> usize {
+    let Some(index) = row
+        .checked_mul(width)
         .and_then(|start| start.checked_add(column))
-        .ok_or(BitmapConversionError::ArithmeticOverflow)
+    else {
+        crate::invariant_violation("bitmap konumu hesaplanırken taşma oluştu");
+    };
+    index
 }
 
-fn set_bitmap_bit<M: Bit>(
-    bits: &mut [M],
-    width: usize,
-    row: usize,
-    column: usize,
-    value: M,
-) -> Result<(), BitmapConversionError> {
-    let index = bitmap_index(width, row, column)?;
-    let bit = bits
-        .get_mut(index)
-        .ok_or(BitmapConversionError::InternalError(
-            "bitmap konumu sınırların dışında",
-        ))?;
+fn set_bitmap_bit<M: Bit>(bits: &mut [M], width: usize, row: usize, column: usize, value: M) {
+    let index = bitmap_index(width, row, column);
+    let Some(bit) = bits.get_mut(index) else {
+        crate::invariant_violation("bitmap konumu sınırların dışında");
+    };
     *bit = value;
-    Ok(())
 }
 
 struct IndexTraversal {
@@ -445,45 +419,47 @@ struct IndexTraversal {
 }
 
 impl IndexTraversal {
-    fn run<F>(&self, mut visit_fn: F) -> Result<(), BitmapConversionError>
+    fn run<F>(&self, mut visit_fn: F)
     where
-        F: FnMut(usize, [usize; 8]) -> Result<(), BitmapConversionError>,
+        F: FnMut(usize, [usize; 8]),
     {
-        let nrow =
-            isize::try_from(self.height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
-        let ncol =
-            isize::try_from(self.width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
-        let entry_count = self
-            .height
-            .checked_mul(self.width)
-            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let Ok(nrow) = isize::try_from(self.height) else {
+            crate::invariant_violation("matrix yüksekliği isize sınırını aştı");
+        };
+        let Ok(ncol) = isize::try_from(self.width) else {
+            crate::invariant_violation("matrix genişliği isize sınırını aştı");
+        };
+        let Some(entry_count) = self.height.checked_mul(self.width) else {
+            crate::invariant_violation("matrix alanı hesaplanırken taşma oluştu");
+        };
         let mut visited = vec![false; entry_count];
 
-        // starting in the correct location for first character, bit 8
+        // İlk karakterin 8. biti için doğru konumdan başlar.
         let mut i = 4;
         let mut j = 0;
         let mut codeword_idx = 0;
 
         macro_rules! visit {
             ($indices:expr) => {
-                let ii = $indices?;
+                let ii = $indices;
                 for v in ii {
-                    let seen = visited
-                        .get_mut(v)
-                        .ok_or(BitmapConversionError::InternalError(
+                    let Some(seen) = visited.get_mut(v) else {
+                        crate::invariant_violation(
                             "codeword yerleşim konumu matrix sınırlarının dışında",
-                        ))?;
+                        );
+                    };
                     *seen = true;
                 }
-                visit_fn(codeword_idx, ii)?;
-                codeword_idx = codeword_idx
-                    .checked_add(1)
-                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+                visit_fn(codeword_idx, ii);
+                let Some(next_codeword_idx) = codeword_idx.checked_add(1) else {
+                    crate::invariant_violation("codeword indeksi hesaplanırken taşma oluştu");
+                };
+                codeword_idx = next_codeword_idx;
             };
         }
 
         loop {
-            // repeatedly first check for one of the special corner cases
+            // Her turda önce özel köşe durumlarından birini denetler.
             if i == nrow && j == 0 {
                 visit!(self.corner1());
             }
@@ -496,9 +472,9 @@ impl IndexTraversal {
             if i == nrow + 4 && j == 2 && ncol % 8 == 0 {
                 visit!(self.corner4());
             }
-            // sweep upward diagonally
+            // Çapraz olarak yukarı tarar.
             loop {
-                if i < nrow && j >= 0 && !self.was_visited(&visited, i, j)? {
+                if i < nrow && j >= 0 && !self.was_visited(&visited, i, j) {
                     visit!(self.utah(i, j));
                 }
                 i -= 2;
@@ -510,9 +486,9 @@ impl IndexTraversal {
             i += 1;
             j += 3;
 
-            // sweep downward diagonally
+            // Çapraz olarak aşağı tarar.
             loop {
-                if i >= 0 && j < ncol && !self.was_visited(&visited, i, j)? {
+                if i >= 0 && j < ncol && !self.was_visited(&visited, i, j) {
                     visit!(self.utah(i, j));
                 }
                 i += 2;
@@ -524,155 +500,164 @@ impl IndexTraversal {
             i += 3;
             j += 1;
 
-            // until entire map is traversed
+            // Map'in tamamı dolaşılana kadar sürdürür.
             if !(i < nrow || j < ncol) {
                 break;
             }
         }
-        Ok(())
     }
 
-    fn was_visited(
-        &self,
-        visited: &[bool],
-        row: isize,
-        column: isize,
-    ) -> Result<bool, BitmapConversionError> {
-        let row = usize::try_from(row).map_err(|_| {
-            BitmapConversionError::InternalError("negatif matrix satırı ziyaret edilmeye çalışıldı")
-        })?;
-        let column = usize::try_from(column).map_err(|_| {
-            BitmapConversionError::InternalError("negatif matrix sütunu ziyaret edilmeye çalışıldı")
-        })?;
-        let index = bitmap_index(self.width, row, column)?;
-        visited
-            .get(index)
-            .copied()
-            .ok_or(BitmapConversionError::InternalError(
-                "ziyaret edilen matrix konumu sınırların dışında",
-            ))
+    fn was_visited(&self, visited: &[bool], row: isize, column: isize) -> bool {
+        let Ok(row) = usize::try_from(row) else {
+            crate::invariant_violation("negatif matrix satırı ziyaret edilmeye çalışıldı");
+        };
+        let Ok(column) = usize::try_from(column) else {
+            crate::invariant_violation("negatif matrix sütunu ziyaret edilmeye çalışıldı");
+        };
+        let index = bitmap_index(self.width, row, column);
+        let Some(value) = visited.get(index).copied() else {
+            crate::invariant_violation("ziyaret edilen matrix konumu sınırların dışında");
+        };
+        value
     }
 
-    /// Compute index with wrapping
-    fn idx(&self, mut i: isize, mut j: isize) -> Result<usize, BitmapConversionError> {
-        let h =
-            isize::try_from(self.height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
-        let w =
-            isize::try_from(self.width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+    /// Wrapping uygulayarak indeksi hesaplar.
+    fn idx(&self, mut i: isize, mut j: isize) -> usize {
+        let Ok(h) = isize::try_from(self.height) else {
+            crate::invariant_violation("matrix yüksekliği isize sınırını aştı");
+        };
+        let Ok(w) = isize::try_from(self.width) else {
+            crate::invariant_violation("matrix genişliği isize sınırını aştı");
+        };
         if i < 0 {
-            i = i
-                .checked_add(h)
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let Some(wrapped_i) = i.checked_add(h) else {
+                crate::invariant_violation("matrix satırı sarmalanırken taşma oluştu");
+            };
+            i = wrapped_i;
             let adjustment = 4 - ((h + 4) % 8);
-            j = j
-                .checked_add(adjustment)
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let Some(adjusted_j) = j.checked_add(adjustment) else {
+                crate::invariant_violation("matrix sütunu ayarlanırken taşma oluştu");
+            };
+            j = adjusted_j;
         }
         if j < 0 {
-            j = j
-                .checked_add(w)
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let Some(wrapped_j) = j.checked_add(w) else {
+                crate::invariant_violation("matrix sütunu sarmalanırken taşma oluştu");
+            };
+            j = wrapped_j;
             let adjustment = 4 - ((w + 4) % 8);
-            i = i
-                .checked_add(adjustment)
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let Some(adjusted_i) = i.checked_add(adjustment) else {
+                crate::invariant_violation("matrix satırı ayarlanırken taşma oluştu");
+            };
+            i = adjusted_i;
         }
-        // this is needed for DMRE sizes
+        // Bu işlem DMRE size değerleri için gereklidir.
         if i >= h {
-            i = i
-                .checked_sub(h)
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let Some(wrapped_i) = i.checked_sub(h) else {
+                crate::invariant_violation("matrix satırı sarmalanırken taşma oluştu");
+            };
+            i = wrapped_i;
         }
         if !(i >= 0 && i < h && j >= 0 && j < w) {
-            return Err(BitmapConversionError::InternalError(
-                "sarmalanmış codeword konumu matrix sınırlarının dışında",
-            ));
+            crate::invariant_violation("sarmalanmış codeword konumu matrix sınırlarının dışında");
         }
-        let row = usize::try_from(i).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
-        let column = usize::try_from(j).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        let Ok(row) = usize::try_from(i) else {
+            crate::invariant_violation("matrix satırı usize değerine dönüştürülemedi");
+        };
+        let Ok(column) = usize::try_from(j) else {
+            crate::invariant_violation("matrix sütunu usize değerine dönüştürülemedi");
+        };
         bitmap_index(self.width, row, column)
     }
 
-    /// Compute indices for utah-shaped symbol (the standard symbol)
-    fn utah(&self, i: isize, j: isize) -> Result<[usize; 8], BitmapConversionError> {
-        Ok([
-            self.idx(i - 2, j - 2)?,
-            self.idx(i - 2, j - 1)?,
-            self.idx(i - 1, j - 2)?,
-            self.idx(i - 1, j - 1)?,
-            self.idx(i - 1, j)?,
-            self.idx(i, j - 2)?,
-            self.idx(i, j - 1)?,
-            self.idx(i, j)?,
-        ])
+    /// Utah biçimli symbol (standart symbol) için indeksleri hesaplar.
+    fn utah(&self, i: isize, j: isize) -> [usize; 8] {
+        [
+            self.idx(i - 2, j - 2),
+            self.idx(i - 2, j - 1),
+            self.idx(i - 1, j - 2),
+            self.idx(i - 1, j - 1),
+            self.idx(i - 1, j),
+            self.idx(i, j - 2),
+            self.idx(i, j - 1),
+            self.idx(i, j),
+        ]
     }
 
-    fn dimensions(&self) -> Result<(isize, isize), BitmapConversionError> {
-        Ok((
-            isize::try_from(self.height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?,
-            isize::try_from(self.width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?,
-        ))
+    fn dimensions(&self) -> (isize, isize) {
+        let Ok(height) = isize::try_from(self.height) else {
+            crate::invariant_violation("matrix yüksekliği isize sınırını aştı");
+        };
+        let Ok(width) = isize::try_from(self.width) else {
+            crate::invariant_violation("matrix genişliği isize sınırını aştı");
+        };
+        (height, width)
     }
 
-    fn corner1(&self) -> Result<[usize; 8], BitmapConversionError> {
-        let (h, w) = self.dimensions()?;
-        Ok([
-            self.idx(h - 1, 0)?,
-            self.idx(h - 1, 1)?,
-            self.idx(h - 1, 2)?,
-            self.idx(0, w - 2)?,
-            self.idx(0, w - 1)?,
-            self.idx(1, w - 1)?,
-            self.idx(2, w - 1)?,
-            self.idx(3, w - 1)?,
-        ])
+    fn corner1(&self) -> [usize; 8] {
+        let (h, w) = self.dimensions();
+        [
+            self.idx(h - 1, 0),
+            self.idx(h - 1, 1),
+            self.idx(h - 1, 2),
+            self.idx(0, w - 2),
+            self.idx(0, w - 1),
+            self.idx(1, w - 1),
+            self.idx(2, w - 1),
+            self.idx(3, w - 1),
+        ]
     }
 
-    fn corner2(&self) -> Result<[usize; 8], BitmapConversionError> {
-        let (h, w) = self.dimensions()?;
-        Ok([
-            self.idx(h - 3, 0)?,
-            self.idx(h - 2, 0)?,
-            self.idx(h - 1, 0)?,
-            self.idx(0, w - 4)?,
-            self.idx(0, w - 3)?,
-            self.idx(0, w - 2)?,
-            self.idx(0, w - 1)?,
-            self.idx(1, w - 1)?,
-        ])
+    fn corner2(&self) -> [usize; 8] {
+        let (h, w) = self.dimensions();
+        [
+            self.idx(h - 3, 0),
+            self.idx(h - 2, 0),
+            self.idx(h - 1, 0),
+            self.idx(0, w - 4),
+            self.idx(0, w - 3),
+            self.idx(0, w - 2),
+            self.idx(0, w - 1),
+            self.idx(1, w - 1),
+        ]
     }
 
-    fn corner3(&self) -> Result<[usize; 8], BitmapConversionError> {
-        let (h, w) = self.dimensions()?;
-        Ok([
-            self.idx(h - 3, 0)?,
-            self.idx(h - 2, 0)?,
-            self.idx(h - 1, 0)?,
-            self.idx(0, w - 2)?,
-            self.idx(0, w - 1)?,
-            self.idx(1, w - 1)?,
-            self.idx(2, w - 1)?,
-            self.idx(3, w - 1)?,
-        ])
+    fn corner3(&self) -> [usize; 8] {
+        let (h, w) = self.dimensions();
+        [
+            self.idx(h - 3, 0),
+            self.idx(h - 2, 0),
+            self.idx(h - 1, 0),
+            self.idx(0, w - 2),
+            self.idx(0, w - 1),
+            self.idx(1, w - 1),
+            self.idx(2, w - 1),
+            self.idx(3, w - 1),
+        ]
     }
 
-    fn corner4(&self) -> Result<[usize; 8], BitmapConversionError> {
-        let (h, w) = self.dimensions()?;
-        Ok([
-            self.idx(h - 1, 0)?,
-            self.idx(h - 1, w - 1)?,
-            self.idx(0, w - 3)?,
-            self.idx(0, w - 2)?,
-            self.idx(0, w - 1)?,
-            self.idx(1, w - 3)?,
-            self.idx(1, w - 2)?,
-            self.idx(1, w - 1)?,
-        ])
+    fn corner4(&self) -> [usize; 8] {
+        let (h, w) = self.dimensions();
+        [
+            self.idx(h - 1, 0),
+            self.idx(h - 1, w - 1),
+            self.idx(0, w - 3),
+            self.idx(0, w - 2),
+            self.idx(0, w - 1),
+            self.idx(1, w - 3),
+            self.idx(1, w - 2),
+            self.idx(1, w - 1),
+        ]
     }
 }
 
 impl MatrixMap<bool> {
-    /// Create a MatrixMap and fills with codewords.
+    /// MatrixMap oluşturur ve codeword'lerle doldurur.
+    ///
+    /// # Hatalar
+    ///
+    /// `data` uzunluğu seçilen symbol size değerinin codeword sayısıyla
+    /// eşleşmiyorsa hata döndürür.
     pub fn new_with_codewords(
         data: &[u8],
         symbol_size: SymbolSize,
@@ -684,59 +669,49 @@ impl MatrixMap<bool> {
                 actual: data.len(),
             });
         }
-        let mut matrix = Self::new(symbol_size)?;
-        matrix.copy_from_codewords(data)?;
+        let mut matrix = Self::new(symbol_size);
+        matrix.copy_from_codewords(data);
         Ok(matrix)
     }
 
-    /// Copy the data from the codewords to the corresponding positions.
+    /// Data'yı codeword'lerden karşılık gelen konumlara kopyalar.
     ///
-    /// Also writes a padding pattern if necessary.
+    /// Gerekiyorsa padding pattern da yazar.
     ///
-    fn copy_from_codewords(&mut self, data: &[u8]) -> Result<(), BitmapConversionError> {
-        let expected = self.entries.len() / 8;
+    fn copy_from_codewords(&mut self, data: &[u8]) {
         self.traverse_mut(|idx, bits| {
-            let mut codeword =
-                data.get(idx)
-                    .copied()
-                    .ok_or(BitmapConversionError::CodewordCount {
-                        expected,
-                        actual: data.len(),
-                    })?;
+            let Some(mut codeword) = data.get(idx).copied() else {
+                crate::invariant_violation("doğrulanmış codeword konumu data sınırlarının dışında");
+            };
             for bit in bits.into_iter().rev() {
                 *bit = codeword & 1 == 1;
                 codeword >>= 1;
             }
-            Ok(())
-        })?;
-        self.write_padding()
+        });
+        self.write_padding();
     }
 
-    /// Extract the codewords.
+    /// Codeword'leri çıkarır.
     ///
-    /// This includes the error correction codewords.
-    pub fn codewords(&self) -> Result<Vec<u8>, BitmapConversionError> {
+    /// Error correction codeword'leri de sonuca dahildir.
+    pub fn codewords(&self) -> Vec<u8> {
         let mut data = vec![0; self.entries.len() / 8];
         self.traverse(|idx, bits| {
-            let codeword = data
-                .get_mut(idx)
-                .ok_or(BitmapConversionError::InternalError(
-                    "çıkarılan codeword konumu çıktı sınırlarının dışında",
-                ))?;
+            let Some(codeword) = data.get_mut(idx) else {
+                crate::invariant_violation("çıkarılan codeword konumu çıktı sınırlarının dışında");
+            };
             for bit in bits {
                 *codeword = (*codeword << 1) | (bit as u8);
             }
-            Ok(())
-        })?;
-        Ok(data)
+        });
+        data
     }
 }
 
-/// An abstract bitmap.
+/// Soyut bitmap.
 ///
-/// Contains helpers for rendering the content. For rendering targets which
-/// use something similar to pixels try [pixels()](Self::pixels), while
-/// vector formats might profit from [path()][Self::path].
+/// İçeriği render etmek için yardımcılar içerir. Piksel benzeri hedeflerde
+/// [pixels()](Self::pixels), vector formatlarda [path()](Self::path) kullanılabilir.
 #[derive(Clone, Debug)]
 pub struct Bitmap<M> {
     width: usize,
@@ -749,9 +724,9 @@ impl Bit for bool {
 }
 
 impl<B: Bit> Bitmap<B> {
-    /// Create a new Bitmap.
+    /// Yeni bir Bitmap oluşturur.
     ///
-    /// This allows you to use the rendering helpers also for, say, QR codes:
+    /// Böylece rendering yardımcıları örneğin QR code'lar için de kullanılabilir:
     ///
     /// ```rust
     /// # use datamatrix::placement::Bitmap;
@@ -764,6 +739,11 @@ impl<B: Bit> Bitmap<B> {
     /// print!("{}", bitmap.unicode());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    ///
+    /// # Hatalar
+    ///
+    /// Genişlik sıfırsa, data genişlikle uyuşmuyorsa veya boyutlar hedef
+    /// mimarinin güvenle temsil edebileceği aralığı aşıyorsa hata döndürür.
     pub fn new<T>(bits: T, width: usize) -> Result<Self, BitmapConversionError>
     where
         T: IntoIterator<Item = B>,
@@ -790,20 +770,20 @@ impl<B: Bit> Bitmap<B> {
         Ok(Self { width, bits })
     }
 
-    /// Return the width of the bitmap (no quiet zone included).
+    /// Bitmap genişliğini döndürür; quiet zone dahil değildir.
     pub fn width(&self) -> usize {
         self.width
     }
 
-    /// Return the height of the bitmap (no quiet zone included).
+    /// Bitmap yüksekliğini döndürür; quiet zone dahil değildir.
     pub fn height(&self) -> usize {
         self.bits.len() / self.width
     }
 
-    /// Compute a unicode representation ("ASCII art").
+    /// Unicode gösterimi ("ASCII art") hesaplar.
     ///
-    /// This is intended as a demo functionality. It might look weird
-    /// if the line height is wrong or if you are not using a monospaced font.
+    /// Bu yalnızca demo özelliğidir. Satır yüksekliği yanlışsa veya monospaced font
+    /// kullanılmıyorsa görünüm bozuk olabilir.
     pub fn unicode(&self) -> String {
         const BORDER: usize = 1;
         const INVERT: bool = false;
@@ -838,33 +818,30 @@ impl<B: Bit> Bitmap<B> {
         out
     }
 
-    /// Get an iterator over the "black" pixels' coordinates `(x, y)`.
+    /// "Siyah" piksellerin `(x, y)` koordinatları üzerinde iterator döndürür.
     ///
-    /// A black pixel refers to one of the tiny black squares a Data Matrix
-    /// is usually made of. Depending on your target, such a pixel
-    /// may be rendered using multiple image pixels, or whatever you use
-    /// to visualize the Data Matrix.
+    /// Siyah piksel, Data Matrix'i oluşturan küçük siyah karelerden biridir.
+    /// Hedefe göre böyle bir piksel birden fazla görsel pikseliyle veya Data Matrix'i
+    /// görselleştirmek için kullanılan başka bir öğeyle render edilebilir.
     ///
-    /// The coordinate system is centered in the top left corner starting
-    /// in `(0, 0)` with a horizontal x-axis and vertical y-axis.
-    /// The pixels are returned in order, incrementing x before y.
+    /// Koordinat sistemi sol üst köşedeki `(0, 0)` noktasından başlar; x ekseni
+    /// yatay, y ekseni dikeydir. Pikseller y'den önce x artırılarak sıralanır.
     ///
-    /// A quiet zone is not included in the coordinates but one must
-    /// be added when rendering: The minimum free space required around the Data Matrix
-    /// has to have the width/height of one "black" pixel.
-    /// The quiet zone should have the background's color.
+    /// Quiet zone koordinatlara dahil değildir ancak rendering sırasında eklenmelidir.
+    /// Data Matrix çevresindeki asgari boşluk, bir "siyah" pikselin genişliği ve
+    /// yüksekliği kadar olmalıdır. Quiet zone arka plan rengini kullanmalıdır.
     ///
-    /// A Data Matrix can be either rendered using dark color on a light background,
-    /// or the other way around. More details on contrast, size, etc. can be found in the referenced
-    /// standards mentioned in the specification.
+    /// Data Matrix açık arka plan üzerinde koyu renkle veya bunun tersiyle render
+    /// edilebilir. Contrast, size ve diğer ayrıntılar specification içinde anılan
+    /// referans standartlarda bulunabilir.
     ///
-    /// # Example
+    /// # Örnek
     ///
     /// ```rust
     /// # use datamatrix::{DataMatrix, SymbolSize};
     /// let code = DataMatrix::encode(b"Foo", SymbolSize::Square10)?;
-    /// for (x, y) in code.bitmap()?.pixels() {
-    ///     // place square/circle at (x, y) to render this Data Matrix
+    /// for (x, y) in code.bitmap().pixels() {
+    ///     // Data Matrix'i render etmek için (x, y) konumuna kare veya daire yerleştirin.
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -892,24 +869,21 @@ mod tests {
         const HIGH: Self = (0, 1);
     }
 
-    pub fn log(
-        symbol_size: super::SymbolSize,
-    ) -> Result<Vec<(u16, u8)>, super::BitmapConversionError> {
-        let mut matrix = super::MatrixMap::<(u16, u8)>::new(symbol_size)?;
+    pub fn log(symbol_size: super::SymbolSize) -> Vec<(u16, u8)> {
+        let mut matrix = super::MatrixMap::<(u16, u8)>::new(symbol_size);
         matrix.traverse_mut(|codeword, bits| {
             for (index, bit) in bits.into_iter().enumerate() {
                 *bit = ((codeword + 1) as u16, (index + 1) as u8);
             }
-            Ok(())
-        })?;
-        matrix.write_padding()?;
-        Ok(matrix.entries)
+        });
+        matrix.write_padding();
+        matrix.entries
     }
 }
 
 #[test]
-fn test_12x12() -> Result<(), BitmapConversionError> {
-    let log = tests::log(SymbolSize::Square12)?;
+fn test_12x12() {
+    let log = tests::log(SymbolSize::Square12);
     #[rustfmt::skip]
     let should = [
         (2,1), (2,2), (3,6), (3,7), (3,8), (4,3), (4,4), (4,5), (1,1), (1,2),
@@ -924,12 +898,11 @@ fn test_12x12() -> Result<(), BitmapConversionError> {
         (3,3), (3,4), (3,5), (4,1), (4,2), (12,6), (12,7), (12,8), (0,0), (0,1)
     ];
     assert_eq!(&log, &should);
-    Ok(())
 }
 
 #[test]
-fn test_10x10() -> Result<(), BitmapConversionError> {
-    let log = tests::log(SymbolSize::Square10)?;
+fn test_10x10() {
+    let log = tests::log(SymbolSize::Square10);
     #[rustfmt::skip]
     let should = [
         (2,1), (2,2), (3,6), (3,7), (3,8), (4,3), (4,4), (4,5),
@@ -942,12 +915,11 @@ fn test_10x10() -> Result<(), BitmapConversionError> {
         (7,7), (7,8), (3,3), (3,4), (3,5), (4,1), (4,2), (7,6),
     ];
     assert_eq!(&log, &should);
-    Ok(())
 }
 
 #[test]
-fn test_8x32() -> Result<(), BitmapConversionError> {
-    let log = tests::log(SymbolSize::Rect8x32)?;
+fn test_8x32() {
+    let log = tests::log(SymbolSize::Rect8x32);
     #[rustfmt::skip]
     let should = [
         (2,1), (2,2), (3,6), (3,7), (3,8), (4,3), (4,4), (4,5), (8,1), (8,2), (9,6), (9,7), (9,8), (10,3), (10,4), (10,5), (14,1), (14,2), (15,6), (15,7), (15,8), (16,3), (16,4), (16,5), (20,1), (20,2), (1,4), (1,5),
@@ -958,15 +930,14 @@ fn test_8x32() -> Result<(), BitmapConversionError> {
         (1,3), (6,6), (6,7), (6,8), (3,3), (3,4), (3,5), (4,1), (4,2), (12,6), (12,7), (12,8), (9,3), (9,4), (9,5), (10,1), (10,2), (18,6), (18,7), (18,8), (15,3), (15,4), (15,5), (16,1), (16,2), (21,6), (21,7), (21,8),
     ];
     assert_eq!(&log, &should);
-    Ok(())
 }
 
 #[test]
 fn test_from_bits_all() -> Result<(), BitmapConversionError> {
     let mut random_map = crate::test::random_maps();
     for size in SymbolList::all() {
-        let map = random_map(size)?;
-        let bitmap = map.bitmap()?;
+        let map = random_map(size);
+        let bitmap = map.bitmap();
         let (map2, _size) = MatrixMap::try_from_bits(&bitmap.bits, bitmap.width)?;
         assert_eq!(map.entries, map2.entries);
     }
@@ -980,4 +951,31 @@ fn test_bitmap_new() -> Result<(), BitmapConversionError> {
     let data = &[true, false];
     Bitmap::new(data.iter().cloned(), 2)?;
     Ok(())
+}
+
+#[test]
+fn test_bitmap_new_rejects_invalid_boundaries() {
+    assert_eq!(
+        Bitmap::<bool>::new([], 0).err(),
+        Some(BitmapConversionError::ZeroWidth)
+    );
+    assert_eq!(
+        Bitmap::<bool>::new([true, false, true], 2).err(),
+        Some(BitmapConversionError::DataSize)
+    );
+    assert_eq!(
+        Bitmap::<bool>::new([], usize::MAX).err(),
+        Some(BitmapConversionError::ArithmeticOverflow)
+    );
+}
+
+#[test]
+fn test_codeword_count_is_validated_at_boundary() {
+    assert_eq!(
+        MatrixMap::new_with_codewords(&[], SymbolSize::Square10).err(),
+        Some(BitmapConversionError::CodewordCount {
+            expected: SymbolSize::Square10.num_codewords(),
+            actual: 0,
+        })
+    );
 }

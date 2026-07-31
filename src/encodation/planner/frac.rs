@@ -10,7 +10,7 @@ pub(super) type C = u32;
 
 const DENUM: C = 12;
 
-/// Fraction with a fixed denominator.
+/// Sabit paydalı kesir.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(super) struct Frac(C);
 
@@ -30,26 +30,49 @@ impl Frac {
 
     #[inline]
     fn add_mut(&mut self, num: C, denum: C) {
-        debug_assert!(denum > 0 && DENUM.is_multiple_of(denum));
-        self.0 += num * (DENUM / denum);
+        if denum == 0 || !DENUM.is_multiple_of(denum) {
+            crate::invariant_violation(
+                "encodation cost paydası sıfır olmamalı ve sabit paydayı bölmeli",
+            );
+        }
+        let Some(increment) = num.checked_mul(DENUM / denum) else {
+            crate::invariant_violation("encodation cost artışı hesaplanırken taşma oluştu");
+        };
+        let Some(cost) = self.0.checked_add(increment) else {
+            crate::invariant_violation("encodation cost toplanırken taşma oluştu");
+        };
+        self.0 = cost;
     }
 
     #[inline]
     fn sub_mut(&mut self, num: C, denum: C) {
-        debug_assert!(denum > 0 && DENUM.is_multiple_of(denum));
-        self.0 -= num * (DENUM / denum);
+        if denum == 0 || !DENUM.is_multiple_of(denum) {
+            crate::invariant_violation(
+                "encodation cost paydası sıfır olmamalı ve sabit paydayı bölmeli",
+            );
+        }
+        let Some(decrement) = num.checked_mul(DENUM / denum) else {
+            crate::invariant_violation("encodation cost azalışı hesaplanırken taşma oluştu");
+        };
+        let Some(cost) = self.0.checked_sub(decrement) else {
+            crate::invariant_violation("encodation cost çıkarılırken sonuç negatif oldu");
+        };
+        self.0 = cost;
     }
 
     #[inline]
     pub fn ceil(mut self) -> Self {
         let rest = self.0 % DENUM;
         if rest != 0 {
-            self.0 += DENUM - rest;
+            let Some(value) = self.0.checked_add(DENUM - rest) else {
+                crate::invariant_violation("encodation cost yukarı yuvarlanırken taşma oluştu");
+            };
+            self.0 = value;
         }
         self
     }
 
-    /// Round up to the next whole codeword count.
+    /// Bir sonraki tam codeword sayısına yuvarlar.
     #[cfg(test)]
     pub fn ceil_codewords(self) -> usize {
         (self.ceil().0 / DENUM) as usize

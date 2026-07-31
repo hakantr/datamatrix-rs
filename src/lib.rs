@@ -1,6 +1,6 @@
-//! Data Matrix (ECC 200) decoding and encoding library with an optimizing encoder.
+//! Optimizing encoder içeren Data Matrix (ECC 200) decoding ve encoding kütüphanesi.
 //!
-//! # Usage example
+//! # Kullanım örneği
 //!
 //! ```rust
 //! # use datamatrix::{DataMatrix, SymbolList};
@@ -8,55 +8,53 @@
 //!     b"Hello, World!",
 //!     SymbolList::default(),
 //! )?;
-//! print!("{}", code.bitmap()?.unicode());
+//! print!("{}", code.bitmap().unicode());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! This toy example will print a Data Matrix using Unicode block characters.
-//! For guidance on how to generate other output formats see the helper functions
-//! defined for the [Bitmap struct](Bitmap), or the `examples/` directory of
-//! this project.
+//! Bu basit örnek Unicode blok karakterleriyle bir Data Matrix yazdırır. Diğer
+//! çıktı formatlarını üretme konusunda [Bitmap yapısı](Bitmap) için tanımlanan
+//! yardımcı fonksiyonlara veya projenin `examples/` dizinine bakın.
 //!
-//! You can specify other symbol sizes, see [SymbolList] for details.
+//! Başka symbol size değerleri belirtilebilir; ayrıntılar için [SymbolList]'e bakın.
 //!
-//! # Character encoding notes for Data Matrix
+//! # Data Matrix için character encoding notları
 //!
-//! > **TL;DR** Data should be printable ASCII because many decoders lack a proper charset
-//! > handling. Latin 1 is the next best choice, otherwise you rely on auto detection hacks of
-//! > decoders. This does not apply if you have control over decoding or if you are not overly paranoidal.
+//! > **Kısa özet:** Birçok decoder doğru charset işleme desteğine sahip olmadığından
+//! > data yazdırılabilir ASCII olmalıdır. Sonraki en iyi seçenek Latin-1'dir; aksi
+//! > halde decoder'ların otomatik algılama yöntemlerine güvenirsiniz. Decoding
+//! > sürecini denetliyorsanız veya bu risk sizin için önemli değilse bu uyarı geçerli değildir.
 //!
-//! This full section also applies to QR codes.
+//! Bu bölümün tamamı QR code'lar için de geçerlidir.
 //!
-//! Be careful when encoding strings which contain non printable ASCII characters.
-//! While indicating for example UTF-8 encoding is possible through [ECI](https://en.wikipedia.org/wiki/Extended_Channel_Interpretation),
-//! we doubt that many decoders around the world implement this.
-//! Also notice that some decoders are used as a keyboard source (e.g., handheld scanners)
-//! which _may_ be constrained by platform/locale specific keyboard layouts with
-//! limited Unicode input capabilities. We therefore recommend to stay within
-//! the _printable_ ASCII characters unless you have control over the full encoding
-//! and decoding process.
+//! Yazdırılamayan ASCII karakterleri içeren string'leri encode ederken dikkatli
+//! olun. Örneğin UTF-8 encoding'i [ECI](https://en.wikipedia.org/wiki/Extended_Channel_Interpretation)
+//! ile belirtmek mümkün olsa da dünyadaki birçok decoder'ın bunu uygulamadığı
+//! düşünülmektedir. Bazı decoder'ların klavye kaynağı olarak kullanıldığını da
+//! unutmayın. Örneğin el tipi scanner'lar sınırlı Unicode input özelliğine sahip,
+//! platform/locale'e özgü klavye düzenleriyle kısıtlanabilir. Bu yüzden encoding
+//! ve decoding sürecinin tamamını denetlemiyorsanız _yazdırılabilir_ ASCII
+//! karakterleri içinde kalmanız önerilir.
 //!
-//! The Data Matrix specification defines ISO 8859-1 (Latin-1) as the standard
-//! charset. Our tests indicate that some decoders (smartphone scanner apps) are
-//! reluctant to follow this and return binary output if there are characters in
-//! the upper range, which is a safe choice. Unfortunately, some decoders try to guess the charset
-//! or just always assume UTF-8.
+//! Data Matrix specification, standart charset olarak ISO 8859-1'i (Latin-1)
+//! tanımlar. Testler bazı decoder'ların (akıllı telefon scanner uygulamaları) buna
+//! uymadığını ve üst aralıkta karakterler varsa güvenli bir tercih olarak binary
+//! çıktı döndürdüğünü gösteriyor. Ne yazık ki bazı decoder'lar charset'i tahmin
+//! etmeye çalışır veya her zaman UTF-8 varsayar.
 //!
-//! The full 8bit range can be encoded and
-//! the decoder will also return this exact input. So the problems mentioned above
-//! are related to the _interpretation_ of the data and possible input limitations
-//! in the case of handheld scanners.
+//! 8-bit aralığın tamamı encode edilebilir ve decoder aynı input'u döndürür. Bu
+//! nedenle yukarıdaki sorunlar data'nın _yorumlanmasıyla_ ve el tipi scanner'ların
+//! olası input sınırlamalarıyla ilgilidir.
 //!
 //! # Decoding
 //!
-//! Assuming you have detected a Data Matrix you may decode the message like
-//! this:
+//! Bir Data Matrix algılandığını varsayarsak mesaj şu şekilde decode edilebilir:
 //!
 //! ```rust
 //! # use datamatrix::{SymbolSize, placement::MatrixMap, DataMatrix};
 //! # let codewords1 = [73, 239, 116, 130, 175, 52, 19, 40, 179, 242, 106, 105, 97, 98, 35, 165, 137, 102, 203, 106, 207, 48, 186, 66];
 //! # let map = MatrixMap::new_with_codewords(&codewords1, SymbolSize::Square16)?;
-//! # let bitmap = map.bitmap()?;
+//! # let bitmap = map.bitmap();
 //! # let pixels: Vec<bool> = bitmap.bits().into();
 //! // let pixels: Vec<bool> = …
 //! let width = 16;
@@ -65,16 +63,28 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! # Current limitations
+//! # Geçerli sınırlamalar
 //!
-//! No visual detection is currently implemented, but the decoding backend
-//! is done and exposed in the API. All that is missing is a detector to extract a matrix of true and false values
-//! from an image. A general purpose detector is planned for the future, though.
+//! Görsel algılama henüz uygulanmamıştır ancak decoding backend tamamlanmış ve API
+//! üzerinden sunulmuştur. Eksik olan tek parça, görselden true ve false değerlerinden
+//! oluşan matrix'i çıkaran detector'dır. Gelecekte genel amaçlı bir detector planlanmaktadır.
 //!
-//! Other limitations: Currently there is only [limited support for GS1](DataMatrix::encode_gs1)/FNC1 character encoding,
-//! [limited ECI encoding](DataMatrix::encode_str), no structured append, and no reader programming. The decoding output
-//! format specified in ISO/IEC 15424 is also not implemented (metadata, ECI, etc.), if you have a use case for this
-//! please open an issue.
+//! Diğer sınırlamalar: Şu anda GS1/FNC1 character encoding için [sınırlı destek](DataMatrix::encode_gs1),
+//! [sınırlı ECI encoding](DataMatrix::encode_str) vardır; structured append ve
+//! reader programming yoktur. ISO/IEC 15424 içinde belirtilen decoding çıktı
+//! formatı da (metadata, ECI vb.) uygulanmamıştır. Buna ihtiyacınız varsa issue açın.
+//!
+//! # Hata ve panik sözleşmesi
+//!
+//! Kamuya açık fonksiyonlar geçersiz dış girdi, desteklenmeyen seçenek veya normal
+//! çalışma hatası nedeniyle kasıtlı olarak paniklemez; bunları yapılandırılmış
+//! `Result<T, E>` ile bildirir. Sınır kurucuları girdiyi doğruladıktan sonra private
+//! alanlarla korunan geçerli değerler üzerindeki mantıksal olarak hatasız işlemler
+//! doğrudan sonuç döndürür.
+//!
+//! Panik yalnızca kütüphanenin bir iç değişmezinin bozulduğunu gösteren programlama
+//! hatalarında kullanılır. Bellek tükenmesi, stack overflow ve bağımlılıkların
+//! panikleri bu sözleşmenin dışındadır.
 
 #![no_std]
 extern crate alloc;
@@ -92,6 +102,21 @@ pub mod data;
 pub use encodation::EncodationType;
 pub use symbol_size::{SymbolList, SymbolSize};
 
+/// Private alanlar ve doğrulanmış kurucularla korunan bir iç değişmezin
+/// bozulduğunu bildirir.
+///
+/// Bu fonksiyon kullanıcı girdisini doğrulamak için kullanılmaz. Buraya ulaşmak
+/// kütüphanede bir programlama hatası bulunduğu anlamına gelir.
+#[cold]
+#[track_caller]
+#[expect(
+    clippy::panic,
+    reason = "doğrulanmış private durumun bozulması normal bir çalışma hatası değildir"
+)]
+pub(crate) fn invariant_violation(message: &'static str) -> ! {
+    panic!("datamatrix iç değişmezi bozuldu: {message}")
+}
+
 #[cfg(test)]
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -103,25 +128,22 @@ use placement::{Bitmap, MatrixMap};
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Encoded Data Matrix.
+/// Encode edilmiş Data Matrix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataMatrix {
-    /// Size of the encoded Data Matrix
-    pub size: SymbolSize,
+    size: SymbolSize,
     codewords: Vec<u8>,
     num_data_codewords: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Errors when decoding a Data Matrix.
+/// Data Matrix decode edilirken oluşan hatalar.
 pub enum DecodingError {
-    /// Signals that the pixels could not be mapped to a [symbol size](SymbolSize),
-    /// either because no symbol with matching dimensions was found or because the
-    /// alignment pattern was not correct.
+    /// Eşleşen boyutlarda symbol bulunamadığı veya alignment pattern geçersiz olduğu
+    /// için piksellerin bir [symbol size](SymbolSize) ile eşlenemediğini belirtir.
     PixelConversion(placement::BitmapConversionError),
-    /// Signals that the [error correction](errorcode) was either not done correctly when the
-    /// Data Matrix was encoded or there are too many detection errors, i.e.,
-    /// black or white squares that are wrong.
+    /// Data Matrix encode edilirken [error correction](errorcode) işleminin doğru
+    /// yapılmadığını veya çok fazla algılama hatası (yanlış siyah/beyaz kare) olduğunu belirtir.
     ErrorCorrection(errorcode::ErrorDecodingError),
     DataDecoding(decodation::DataDecodingError),
 }
@@ -139,59 +161,67 @@ impl core::fmt::Display for DecodingError {
 impl core::error::Error for DecodingError {}
 
 impl DataMatrix {
-    /// Decode a Data Matrix from its pixels representation.
+    /// Encode edilmiş Data Matrix'in symbol size değerini döndürür.
+    pub fn size(&self) -> SymbolSize {
+        self.size
+    }
+
+    /// Data Matrix'i piksel gösteriminden decode eder.
     ///
-    /// The alignment pattern must be included. The argument `width` denotes the number of
-    /// pixels in one row.
+    /// Alignment pattern dahil edilmelidir. `width` argümanı tek satırdaki piksel sayısını belirtir.
     ///
-    /// The pixels are expected to be given in row-major order, i.e., the top
-    /// row of pixels comes first, then the second row and so on.
+    /// Piksellerin row-major sırada verilmesi beklenir; önce en üst satır, ardından
+    /// ikinci satır ve diğerleri gelir.
     ///
-    /// The Data Matrix may start with a `FNC1` codeword marking it as a GS1 Data Matrix. The ISO standard
-    /// demands from a scanner to prepend the symbology identifier `]d2` in this case. This is _not_ implemented
-    /// here, the decoder currently only ignores the `FNC1` codeword at the beginning. There are some ideas to
-    /// implement more detailed decoder output if there is demand.
+    /// Data Matrix, GS1 Data Matrix olduğunu belirten `FNC1` codeword ile başlayabilir.
+    /// ISO standardı bu durumda scanner'ın symbology identifier `]d2` değerini
+    /// başa eklemesini ister. Bu davranış burada uygulanmamıştır; decoder başlangıçtaki
+    /// `FNC1` codeword'ü şimdilik yalnızca yok sayar. Talep olursa daha ayrıntılı
+    /// decoder çıktısı uygulanabilir.
     pub fn decode(pixels: &[bool], width: usize) -> Result<Vec<u8>, DecodingError> {
         let (matrix_map, size) =
             MatrixMap::try_from_bits(pixels, width).map_err(DecodingError::PixelConversion)?;
-        let mut codewords = matrix_map
-            .codewords()
-            .map_err(DecodingError::PixelConversion)?;
+        let mut codewords = matrix_map.codewords();
         errorcode::decode_error(&mut codewords, size).map_err(DecodingError::ErrorCorrection)?;
-        let data_codewords =
-            codewords
-                .get(..size.num_data_codewords())
-                .ok_or(DecodingError::ErrorCorrection(
-                    errorcode::ErrorDecodingError::Malfunction,
-                ))?;
+        let Some(data_codewords) = codewords.get(..size.num_data_codewords()) else {
+            invariant_violation(
+                "decode edilen data codeword aralığı toplam codeword sayısını aştı",
+            );
+        };
         decodation::decode_data(data_codewords).map_err(DecodingError::DataDecoding)
     }
 
-    /// Get the data in encoded form.
+    /// Data'yı encoded biçimde döndürür.
     ///
-    /// Error correction is included.
-    /// See [data_codewords()](Self::data_codewords) if you only need the data.
+    /// Error correction dahildir. Yalnızca data gerekiyorsa
+    /// [data_codewords()](Self::data_codewords) yöntemine bakın.
     pub fn codewords(&self) -> &[u8] {
         &self.codewords
     }
 
-    /// Get the codewords that encode the data.
+    /// Data'yı encode eden codeword'leri döndürür.
     ///
-    /// This is a prefix of the codewords returned by [codewords()](Self::codewords).
+    /// Bu değer [codewords()](Self::codewords) tarafından döndürülen codeword'lerin prefix'idir.
     pub fn data_codewords(&self) -> &[u8] {
-        self.codewords
-            .get(..self.num_data_codewords)
-            .unwrap_or_default()
+        let Some(codewords) = self.codewords.get(..self.num_data_codewords) else {
+            invariant_violation("data codeword sayısı toplam codeword sayısını aştı");
+        };
+        codewords
     }
 
-    /// Create an abstract bitmap representing the Data Matrix.
-    pub fn bitmap(&self) -> Result<Bitmap<bool>, placement::BitmapConversionError> {
-        MatrixMap::new_with_codewords(&self.codewords, self.size)?.bitmap()
+    /// Data Matrix'i temsil eden soyut bitmap oluşturur.
+    pub fn bitmap(&self) -> Bitmap<bool> {
+        let Ok(map) = MatrixMap::new_with_codewords(&self.codewords, self.size) else {
+            invariant_violation(
+                "encode edilmiş Data Matrix codeword sayısı symbol size ile uyuşmuyor",
+            );
+        };
+        map.bitmap()
     }
 
-    /// Encode data as a Data Matrix (ECC200).
+    /// Data'yı Data Matrix (ECC200) olarak encode eder.
     ///
-    /// This is wrapper for [DataMatrixBuilder::encode].
+    /// [DataMatrixBuilder::encode] için wrapper'dır.
     pub fn encode<I: Into<SymbolList>>(
         data: &[u8],
         symbol_list: I,
@@ -201,9 +231,9 @@ impl DataMatrix {
             .encode(data)
     }
 
-    /// Encode a string as a Data Matrix (ECC200).
+    /// String'i Data Matrix (ECC200) olarak encode eder.
     ///
-    /// This is wrapper for [DataMatrixBuilder::encode_str].
+    /// [DataMatrixBuilder::encode_str] için wrapper'dır.
     pub fn encode_str<I: Into<SymbolList>>(
         text: &str,
         symbol_list: I,
@@ -213,20 +243,18 @@ impl DataMatrix {
             .encode_str(text)
     }
 
-    /// Encode data as a GS1 Data Matrix.
+    /// Data'yı GS1 Data Matrix olarak encode eder.
     ///
-    /// The only difference to [encode()](Self::encode) is that
-    /// the `FNC1` codeword is added in the first
-    /// position.
+    /// [encode()](Self::encode) yönteminden tek farkı, ilk konuma `FNC1` codeword eklenmesidir.
     ///
-    /// Encoding `FNC1` in later positions is not implemented as of now.
+    /// `FNC1` değerini sonraki konumlarda encoding henüz uygulanmamıştır.
     ///
     /// ```rust
     /// # use datamatrix::{DataMatrix, SymbolList, data::DataEncodingError};
-    /// // use "\x1D" (ASCII GS control sequence) to concatenate element strings
+    /// // Element string'lerini birleştirmek için "\x1D" (ASCII GS control sequence) kullanır.
     /// let data = b"01034531200000111719112510ABCD1234\x1D2110";
     /// let data_matrix = DataMatrix::encode_gs1(data, SymbolList::default())?;
-    /// let bitmap = data_matrix.bitmap()?;
+    /// let bitmap = data_matrix.bitmap();
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn encode_gs1<I: Into<SymbolList>>(
@@ -241,7 +269,7 @@ impl DataMatrix {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Builder for encoding a Data Matrix with more control.
+/// Data Matrix encoding üzerinde daha fazla denetim sağlayan builder.
 pub struct DataMatrixBuilder {
     encodation_types: FlagSet<EncodationType>,
     symbol_list: SymbolList,
@@ -259,11 +287,11 @@ impl DataMatrixBuilder {
         }
     }
 
-    /// Specify which encodation can be used.
+    /// Kullanılabilecek encodation türlerini belirtir.
     ///
-    /// By default all encodation types are enabled.
+    /// Varsayılan olarak bütün encodation türleri etkindir.
     ///
-    /// # Example
+    /// # Örnek
     ///
     /// ```rust
     /// # use datamatrix::{DataMatrixBuilder, data::EncodationType};
@@ -279,22 +307,22 @@ impl DataMatrixBuilder {
         }
     }
 
-    /// Specify whether the Data Matrix shall start with a `FNC1` codeword marking
-    /// it as a GS1 Data Matrix.
+    /// Data Matrix'in GS1 Data Matrix olduğunu belirten `FNC1` codeword ile başlayıp
+    /// başlamayacağını belirtir.
     pub fn with_fnc1_start(self, fnc1_start: bool) -> Self {
         Self { fnc1_start, ..self }
     }
 
-    /// Whether to use macros or not.
+    /// Macro kullanılıp kullanılmayacağını belirtir.
     ///
-    /// This is enabled by default.
+    /// Varsayılan olarak etkindir.
     pub fn with_macros(self, use_macros: bool) -> Self {
         Self { use_macros, ..self }
     }
 
-    /// Specify the list of allowed symbols sizes.
+    /// İzin verilen symbol size listesini belirtir.
     ///
-    /// Uses [SymbolList::default()] by default.
+    /// Varsayılan olarak [SymbolList::default()] kullanır.
     pub fn with_symbol_list<I: Into<SymbolList>>(self, symbol_list: I) -> Self {
         Self {
             symbol_list: symbol_list.into(),
@@ -302,31 +330,31 @@ impl DataMatrixBuilder {
         }
     }
 
-    /// Encode data as a Data Matrix (ECC200).
+    /// Data'yı Data Matrix (ECC200) olarak encode eder.
     ///
-    /// Please read the [module documentation](crate) for some charset notes. If you
-    /// did that and your input can be represented with the Latin 1 charset you may
-    /// use the conversion function in the [data module](crate::data). If you only
-    /// use printable ASCII you can just pass the data as is.
+    /// Charset notları için [modül dokümantasyonunu](crate) okuyun. Input Latin-1
+    /// charset ile gösterilebiliyorsa [data modülündeki](crate::data) dönüşüm
+    /// fonksiyonu kullanılabilir. Yalnızca yazdırılabilir ASCII kullanılıyorsa data
+    /// doğrudan geçirilebilir.
     ///
-    /// If the data does not fit into the given size encoding will fail. The encoder
-    /// can automatically pick the smallest size which fits the data (see [SymbolList])
-    /// but there is an upper limit.
+    /// Data verilen size içine sığmazsa encoding başarısız olur. Encoder data'nın
+    /// sığdığı en küçük size değerini otomatik seçebilir ([SymbolList]'e bakın) ancak
+    /// bir üst sınır vardır.
     pub fn encode(self, data: &[u8]) -> Result<DataMatrix, DataEncodingError> {
         self.encode_eci(data, None)
     }
 
-    /// Encodes a string as a Data Matrix (ECC200).
+    /// String'i Data Matrix (ECC200) olarak encode eder.
     ///
-    /// If the string can be converted to Latin-1, no ECI is used, otherwise
-    /// an initial UTF8 ECI is inserted. Please check if your decoder has support
-    /// for that. See the notes on the [module documentation](crate) for more details.
+    /// String Latin-1'e dönüştürülebiliyorsa ECI kullanılmaz; aksi halde başlangıca
+    /// UTF-8 ECI eklenir. Decoder'ınızın bunu desteklediğini doğrulayın. Ayrıntılar
+    /// için [modül dokümantasyonundaki](crate) notlara bakın.
     pub fn encode_str(self, text: &str) -> Result<DataMatrix, DataEncodingError> {
         if let Some(data) = data::utf8_to_latin1(text) {
-            // string is latin1
+            // String Latin-1'dir.
             self.encode_eci(&data, None)
         } else {
-            // encode with UTF8 ECI
+            // UTF-8 ECI ile encode eder.
             self.encode_eci(text.as_bytes(), Some(decodation::ECI_UTF8))
         }
     }
@@ -345,8 +373,11 @@ impl DataMatrixBuilder {
             self.use_macros,
             self.fnc1_start,
         )?;
-        let ecc = errorcode::encode_error(&codewords, size)
-            .map_err(DataEncodingError::ErrorCorrection)?;
+        let Ok(ecc) = errorcode::encode_error(&codewords, size) else {
+            invariant_violation(
+                "encoder çıktısının data codeword sayısı symbol size ile uyuşmuyor",
+            );
+        };
         let num_data_codewords = codewords.len();
         codewords.extend_from_slice(&ecc);
         Ok(DataMatrix {
@@ -378,10 +409,10 @@ fn test_tile_placement_forth_and_back() -> Result<(), Box<dyn std::error::Error>
     for size in SymbolList::all() {
         let data = rnd_data(size.num_codewords());
         let map = MatrixMap::new_with_codewords(&data, size)?;
-        assert_eq!(map.codewords()?, data);
-        let bitmap = map.bitmap()?;
+        assert_eq!(map.codewords(), data);
+        let bitmap = map.bitmap();
         let (matrix_map, _size) = MatrixMap::try_from_bits(bitmap.bits(), bitmap.width())?;
-        assert_eq!(matrix_map.codewords()?, data);
+        assert_eq!(matrix_map.codewords(), data);
     }
     Ok(())
 }
@@ -397,7 +428,7 @@ fn test_macro_str() -> Result<(), Box<dyn std::error::Error>> {
             encodation::MACRO05,
             encodation::ascii::ECI,
             decodation::ECI_UTF8 as u8 + 1,
-            // Base256 encoding of the four byte utf8 character plus padding
+            // Dört byte UTF-8 karakterin Base256 encoding'i ve padding
             231,
             240,
             114,
@@ -426,21 +457,18 @@ mod test {
     use crate::symbol_size::SymbolSize;
     use alloc::vec::Vec;
 
-    /// Simple LCG random generator for test data generation
-    pub fn random_maps()
-    -> impl FnMut(SymbolSize) -> Result<MatrixMap<bool>, crate::placement::BitmapConversionError>
-    {
+    /// Test data üretimi için basit LCG random generator.
+    pub fn random_maps() -> impl FnMut(SymbolSize) -> MatrixMap<bool> {
         let mut rnd = random_bytes();
         move |size| {
-            let mut map = MatrixMap::new(size)?;
+            let mut map = MatrixMap::new(size);
             map.traverse_mut(|_, bits| {
                 for bit in bits {
                     *bit = rnd() > 127;
                 }
-                Ok(())
-            })?;
-            map.write_padding()?;
-            Ok(map)
+            });
+            map.write_padding();
+            map
         }
     }
 

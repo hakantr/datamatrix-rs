@@ -5,7 +5,7 @@ use crate::encodation::edifact::is_encodable;
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct EdifactPlan<T: ContextInformation> {
-    /// Number of values not yet written
+    /// Henüz yazılmamış değer sayısı.
     ctx: T,
     written: usize,
     ascii_end: Option<Frac>,
@@ -32,7 +32,7 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
 
     fn mode_switch_cost(&self) -> Option<Frac> {
         if self.written == 3 {
-            // three of four values written, the UNLATCH is free
+            // Dört değerden üçü yazıldığında UNLATCH ek cost oluşturmaz.
             Some(self.cost.ceil())
         } else {
             Some((self.cost + Frac::new(3, 4)).ceil())
@@ -40,34 +40,34 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
     }
 
     fn cost(&self) -> Frac {
-        // The fractional estimate is exact while encoding; only the end of data
-        // needs the precise flush. The ASCII-tail case (`ascii_end`) already
-        // accounts for itself and never adds an UNLATCH.
+        // Kesirli tahmin encoding sırasında tamdır; yalnızca end of data kesin bir
+        // flush gerektirir. ASCII kuyruk durumu (`ascii_end`) kendi cost'unu zaten
+        // hesaba katar ve UNLATCH eklemez.
         if self.ctx.has_more_characters() || self.ascii_end.is_some() {
             return self.cost;
         }
-        // Mirror edifact.rs handle_end for the `written` values still buffered.
+        // Buffer'da kalan `written` değerleri için edifact.rs handle_end davranışını yansıtır.
         let w = self.written;
         let space = self.ctx.symbol_size_left(w).unwrap_or(0);
         let trailing = if w == 0 {
-            // Empty buffer: an UNLATCH before padding is only needed if more
-            // than two codewords remain; one or two are filled with ASCII pad
-            // without an UNLATCH (the EDIFACT end-of-data rule).
+            // Buffer boşsa padding öncesinde UNLATCH yalnızca ikiden fazla codeword
+            // kaldığında gerekir. Bir veya iki alan, EDIFACT end-of-data kuralına
+            // göre UNLATCH olmadan ASCII pad ile doldurulur.
             if space > 2 { 1 } else { 0 }
         } else {
-            // Flush the buffered values as one group, appending an UNLATCH if
-            // the symbol has room or the group is full (three values).
+            // Buffer'daki değerleri tek grup halinde flush eder; symbol içinde alan
+            // varsa veya grup doluysa (üç değer) sonuna UNLATCH ekler.
             let symbols = if space > 0 || w == 3 { w + 1 } else { w };
             symbols.min(3)
         };
-        // Replace the fractional estimate of the partial group with the exact
-        // number of codewords the encoder writes for it.
+        // Kısmi grubun kesirli tahminini encoder'ın gerçekte yazdığı codeword
+        // sayısıyla değiştirir.
         self.cost - Frac::new(3 * w as C, 4) + trailing as C
     }
 
     fn write_unlatch(&self) -> Self::Context {
         let mut ctx = self.ctx.clone();
-        // the encoder will call this before any bytes are written
+        // Encoder bunu herhangi bir byte yazılmadan önce çağırır.
         ctx.write((self.written + 1).min(3));
         ctx
     }
@@ -76,7 +76,7 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
         let end = !self.ctx.has_more_characters();
         if !end {
             if self.written == 0 && self.ctx.characters_left() <= 4 && self.ascii_end.is_none() {
-                // are we in a possible end of data situation?
+                // Olası bir end of data durumunda mıyız?
                 let ascii_size = ascii::encoding_size(self.ctx.rest());
                 if ascii_size <= 2 {
                     let space_left = self.ctx.symbol_size_left(ascii_size)?;
@@ -94,7 +94,7 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
             }
             self.ctx.eat()?;
             if let Some(portion_per_char) = self.ascii_end {
-                // add (ascii_size / chars_to_read) every char read to get the correct size
+                // Doğru boyut için okunan her karakterde (ascii_size / chars_to_read) ekler.
                 self.cost += portion_per_char;
             } else {
                 self.cost += Frac::new(3, 4);

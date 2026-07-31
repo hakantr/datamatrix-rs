@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     io::stdin().read_to_end(&mut buffer)?;
 
     let code = DataMatrix::encode(&buffer, SymbolList::default().enforce_square())?;
-    let bitmap = code.bitmap()?;
+    let bitmap = code.bitmap();
 
     // Her yanda bir piksellik quiet zone bulunan padded boyut. Bir octant
     // karakteri 2×4 piksel kapladığından bölmeler yukarı yuvarlanır.

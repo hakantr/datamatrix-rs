@@ -1,4 +1,4 @@
-//! Implementation of the data encodation using all specified modes.
+//! Belirtilen bütün mode'ları kullanan data encodation implementasyonu.
 use crate::symbol_size::{SymbolList, SymbolSize};
 
 use alloc::{vec, vec::Vec};
@@ -29,7 +29,7 @@ pub(crate) const MACRO05_HEAD: &[u8] = b"[)>\x1E05\x1D";
 pub(crate) const MACRO06_HEAD: &[u8] = b"[)>\x1E06\x1D";
 pub(crate) const MACRO_TRAIL: &[u8] = b"\x1E\x04";
 
-// The following is not implemented
+// Aşağıdakiler henüz uygulanmamıştır.
 // const STRUCT_APPEND: u8 = 233;
 // const READER_PROGRAMMING: u8 = 234;
 
@@ -39,13 +39,11 @@ pub(crate) const UNLATCH: u8 = 254;
 use pretty_assertions::assert_eq;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Error when encoding the data part.
+/// Data bölümü encode edilirken oluşan hata.
 pub enum DataEncodingError {
     TooMuchOrIllegalData,
     SymbolListEmpty,
     InvalidEci(u32),
-    ErrorCorrection(crate::errorcode::ErrorEncodingError),
-    InternalError(&'static str),
 }
 
 impl core::fmt::Display for DataEncodingError {
@@ -56,8 +54,6 @@ impl core::fmt::Display for DataEncodingError {
             }
             Self::SymbolListEmpty => f.write_str("izin verilen Data Matrix symbol listesi boş"),
             Self::InvalidEci(eci) => write!(f, "ECI değeri 0..=999999 aralığında olmalı: {eci}"),
-            Self::ErrorCorrection(error) => write!(f, "error correction üretilemedi: {error}"),
-            Self::InternalError(message) => write!(f, "Data Matrix kodlayıcı iç hatası: {message}"),
         }
     }
 }
@@ -65,41 +61,41 @@ impl core::fmt::Display for DataEncodingError {
 impl core::error::Error for DataEncodingError {}
 
 trait EncodingContext {
-    /// Look ahead and switch the mode if necessary.
+    /// İleriye bakar ve gerekirse mode'u değiştirir.
     ///
-    /// Return `true` if the mode was switched.
-    fn maybe_switch_mode(&mut self) -> Result<bool, DataEncodingError>;
+    /// Mode değiştirildiyse `true` döndürür.
+    fn maybe_switch_mode(&mut self) -> bool;
 
-    /// Compute how much space would be left in the symbol.
+    /// Symbol içinde ne kadar alan kalacağını hesaplar.
     ///
-    /// `extra_codewords` is the number of additional codewords to be written.
-    /// This number is not included in the left space. So if the symbol has
-    /// two spaces left and `extra_codewords` is 1, then the function returns `Some(1)`.
+    /// `extra_codewords`, yazılacak ek codeword sayısıdır. Bu sayı kalan alana
+    /// dahil değildir. Örneğin symbol içinde iki alan kalmışsa ve
+    /// `extra_codewords` 1 ise fonksiyon `Some(1)` döndürür.
     fn symbol_size_left(&mut self, extra_codewords: usize) -> Option<usize>;
 
     fn eat(&mut self) -> Option<u8>;
 
-    fn backup(&mut self, steps: usize) -> Result<(), DataEncodingError>;
+    fn backup(&mut self, steps: usize);
 
     fn rest(&self) -> &[u8];
 
     fn push(&mut self, ch: u8);
 
-    fn replace(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError>;
+    fn replace(&mut self, index: usize, ch: u8);
 
-    fn insert(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError>;
+    fn insert(&mut self, index: usize, ch: u8);
 
-    /// Get the codewords written so far.
+    /// Şimdiye kadar yazılan codeword'leri döndürür.
     fn codewords(&self) -> &[u8];
 
     fn set_ascii_until_end(&mut self);
 
-    /// Number of characters yet to be encoded.
+    /// Henüz encode edilmemiş karakter sayısı.
     fn characters_left(&self) -> usize {
         self.rest().len()
     }
 
-    /// Are there more characters to process?
+    /// İşlenecek başka karakter var mı?
     fn has_more_characters(&self) -> bool {
         !self.rest().is_empty()
     }
@@ -117,19 +113,13 @@ pub(crate) struct GenericDataEncoder<'a> {
 }
 
 impl<'a> EncodingContext for GenericDataEncoder<'a> {
-    fn maybe_switch_mode(&mut self) -> Result<bool, DataEncodingError> {
+    fn maybe_switch_mode(&mut self) -> bool {
         let chars_left = self.characters_left();
-        let next_switch =
-            self.planned_switches
-                .first()
-                .copied()
-                .ok_or(DataEncodingError::InternalError(
-                    "Encodation planında sonraki mode switch bulunamadı",
-                ))?;
+        let Some(next_switch) = self.planned_switches.first().copied() else {
+            crate::invariant_violation("encodation planında sonraki mode switch bulunamadı");
+        };
         if chars_left < next_switch.0 {
-            return Err(DataEncodingError::InternalError(
-                "Encodation planındaki mode switch konumu geçildi",
-            ));
+            crate::invariant_violation("encodation planındaki mode switch konumu geçildi");
         }
         let new_mode = if chars_left > 0 && chars_left == next_switch.0 {
             let switch = self.planned_switches.remove(0);
@@ -142,14 +132,15 @@ impl<'a> EncodingContext for GenericDataEncoder<'a> {
             // Yeni mode ASCII değilse ilgili LATCH codeword'ünü hazırla.
             self.encodation = new_mode;
             if !new_mode.is_ascii() {
-                self.new_mode = Some(new_mode.latch_from_ascii().ok_or(
-                    DataEncodingError::InternalError(
+                let Some(latch) = new_mode.latch_from_ascii() else {
+                    crate::invariant_violation(
                         "ASCII mode'dan geçiş için LATCH codeword bulunamadı",
-                    ),
-                )?);
+                    );
+                };
+                self.new_mode = Some(latch);
             }
         }
-        Ok(switch)
+        switch
     }
 
     fn symbol_size_left(&mut self, extra_codewords: usize) -> Option<usize> {
@@ -163,22 +154,17 @@ impl<'a> EncodingContext for GenericDataEncoder<'a> {
         Some(*ch)
     }
 
-    fn backup(&mut self, steps: usize) -> Result<(), DataEncodingError> {
-        let consumed = self.input.len().checked_sub(self.data.len()).ok_or(
-            DataEncodingError::InternalError("input ve kalan veri uzunlukları tutarsız"),
-        )?;
-        let offset = consumed
-            .checked_sub(steps)
-            .ok_or(DataEncodingError::InternalError(
-                "istenen backup miktarı tüketilen input miktarını aşıyor",
-            ))?;
-        self.data = self
-            .input
-            .get(offset..)
-            .ok_or(DataEncodingError::InternalError(
-                "backup sonrasında input dilimi oluşturulamadı",
-            ))?;
-        Ok(())
+    fn backup(&mut self, steps: usize) {
+        let Some(consumed) = self.input.len().checked_sub(self.data.len()) else {
+            crate::invariant_violation("input ve kalan veri uzunlukları tutarsız");
+        };
+        let Some(offset) = consumed.checked_sub(steps) else {
+            crate::invariant_violation("istenen backup miktarı tüketilen input miktarını aşıyor");
+        };
+        let Some(data) = self.input.get(offset..) else {
+            crate::invariant_violation("backup sonrasında input dilimi oluşturulamadı");
+        };
+        self.data = data;
     }
 
     fn rest(&self) -> &[u8] {
@@ -193,25 +179,18 @@ impl<'a> EncodingContext for GenericDataEncoder<'a> {
         &self.codewords
     }
 
-    fn replace(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError> {
-        let codeword = self
-            .codewords
-            .get_mut(index)
-            .ok_or(DataEncodingError::InternalError(
-                "değiştirilecek codeword konumu bulunamadı",
-            ))?;
+    fn replace(&mut self, index: usize, ch: u8) {
+        let Some(codeword) = self.codewords.get_mut(index) else {
+            crate::invariant_violation("değiştirilecek codeword konumu bulunamadı");
+        };
         *codeword = ch;
-        Ok(())
     }
 
-    fn insert(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError> {
+    fn insert(&mut self, index: usize, ch: u8) {
         if index > self.codewords.len() {
-            return Err(DataEncodingError::InternalError(
-                "codeword ekleme konumu mevcut uzunluğu aşıyor",
-            ));
+            crate::invariant_violation("codeword ekleme konumu mevcut uzunluğu aşıyor");
         }
         self.codewords.insert(index, ch);
-        Ok(())
     }
 
     fn set_ascii_until_end(&mut self) {
@@ -292,8 +271,8 @@ impl<'a> GenericDataEncoder<'a> {
         Ok((codewords, symbol_size))
     }
 
-    /// Run the planner and the encoders, leaving the unpadded data codewords
-    /// in `self.codewords`. Returns the symbol size chosen for them.
+    /// Planner ve encoder'ları çalıştırıp unpadded data codeword'leri
+    /// `self.codewords` içinde bırakır. Seçilen symbol size değerini döndürür.
     fn encode_to_unpadded(&mut self) -> Result<SymbolSize, DataEncodingError> {
         if self.symbol_list.is_empty() {
             return Err(DataEncodingError::SymbolListEmpty);
@@ -325,14 +304,16 @@ impl<'a> GenericDataEncoder<'a> {
 
             self.encodation.clone().encode(self)?;
 
-            let words_written = self.codewords.len() - len;
+            let Some(words_written) = self.codewords.len().checked_sub(len) else {
+                crate::invariant_violation("encoder codeword uzunluğu beklenmedik biçimde azaldı");
+            };
             if words_written <= 1 {
-                // no mode can do something useful in 1 word (at EOD, but that is fine)
+                // End of data noktasında hiçbir mode 1 codeword ile yararlı işlem yapamaz; bu normaldir.
                 no_write_run += 1;
                 if no_write_run > 5 {
-                    return Err(DataEncodingError::InternalError(
+                    crate::invariant_violation(
                         "encoder art arda altı adım boyunca ilerleme sağlayamadı",
-                    ));
+                    );
                 }
             } else {
                 no_write_run = 0;
@@ -343,10 +324,10 @@ impl<'a> GenericDataEncoder<'a> {
             .ok_or(DataEncodingError::TooMuchOrIllegalData)
     }
 
-    /// Number of data codewords the encoder emits before padding.
+    /// Encoder'ın padding öncesinde ürettiği data codeword sayısı.
     ///
-    /// Used by the consistency proptests to check that the planner's predicted
-    /// cost matches what the encoder actually produces.
+    /// Planner'ın tahmin ettiği cost ile encoder'ın gerçek çıktısının eşleştiğini
+    /// denetleyen tutarlılık proptest'leri tarafından kullanılır.
     #[cfg(test)]
     pub(crate) fn unpadded_len(&mut self) -> Result<usize, DataEncodingError> {
         self.encode_to_unpadded()?;
@@ -385,7 +366,7 @@ impl<'a> GenericDataEncoder<'a> {
         }
     }
 
-    /// Get the theoretical maximum data length we can encode with our list of symbols.
+    /// Symbol listesiyle encode edilebilecek teorik azami veri uzunluğunu döndürür.
     fn upper_limit_for_number_of_codewords(&self) -> Result<usize, DataEncodingError> {
         self.symbol_list
             .upper_limit_for_number_of_codewords(self.data.len())

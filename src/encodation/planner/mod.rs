@@ -1,7 +1,7 @@
-//! This modules finds an optimal encodation mode.
+//! Bu modül en uygun encodation mode'unu bulur.
 //!
-//! It is almost decoupled from the rest of the crate. You can use this
-//! to decide at any point in the input to which encodation mode to switch.
+//! Crate'in geri kalanından neredeyse tamamen ayrıdır. Input'un herhangi bir
+//! noktasında hangi encodation mode'una geçileceğini belirlemek için kullanılabilir.
 mod ascii;
 mod base256;
 mod c40;
@@ -42,24 +42,24 @@ trait ContextInformation: Clone {
 
 #[derive(Debug, PartialEq)]
 struct StepResult {
-    /// Signals that nothing was done, planer is at the end of input.
+    /// İşlem yapılmadığını ve planner'ın input sonunda olduğunu belirtir.
     end: bool,
-    /// Signals that this step can not be beaten by a prior mode switch
+    /// Bu adımın önceki bir mode switch tarafından iyileştirilemeyeceğini belirtir.
     unbeatable: bool,
 }
 
 trait Plan: Clone {
     type Context;
 
-    /// Get the new cost we would get after switching to the ASCII mode (if possible).
+    /// Mümkünse ASCII mode'a geçişten sonraki yeni cost'u döndürür.
     fn mode_switch_cost(&self) -> Option<Frac>;
 
-    /// Get the current cost.
+    /// Geçerli cost'u döndürür.
     fn cost(&self) -> Frac;
 
-    /// Read the next char (if any), return None if this failed.
+    /// Varsa sıradaki karakteri okur; başarısız olursa None döndürür.
     fn step(&mut self) -> Option<StepResult>;
 
-    /// Called when the mode is switched.
+    /// Mode değiştirildiğinde çağrılır.
     fn write_unlatch(&self) -> Self::Context;
 }

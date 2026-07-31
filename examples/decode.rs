@@ -39,8 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (matrix_map, size) = MatrixMap::try_from_bits(&pixels, width)?;
     let data = DataMatrix::decode(&pixels, width)?;
-    println!("{}", matrix_map.bitmap()?.unicode());
-    println!("Symbol size: {:?}", size);
+    println!("{}", matrix_map.bitmap().unicode());
+    println!("Symbol size değeri: {:?}", size);
     println!("İçerik: {:?}", std::str::from_utf8(&data)?);
     Ok(())
 }

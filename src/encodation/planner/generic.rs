@@ -13,9 +13,9 @@ use super::{
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Run `$body` on the inner plan, regardless of which mode it is.
+/// İç plan hangi mode'da olursa olsun `$body` bloğunu çalıştırır.
 ///
-/// The inner plan is bound to `$pl`. Use the `mut` form for a mutable borrow.
+/// İç plan `$pl` değişkenine bağlanır. Mutable borrow için `mut` biçimi kullanılır.
 macro_rules! dispatch {
     ($self:expr, $pl:ident => $body:expr) => {
         match &$self.plan {
@@ -71,7 +71,7 @@ enum PlanImpl<'a> {
 }
 
 impl<'a> GenericPlan<'a> {
-    /// Create an instance which starts with the given encodation type.
+    /// Verilen encodation türüyle başlayan bir örnek oluşturur.
     pub(super) fn for_mode(
         mode: EncodationType,
         data: &'a [u8],
@@ -95,7 +95,7 @@ impl<'a> GenericPlan<'a> {
         }
     }
 
-    /// Get the mode this plan started with.
+    /// Planın başladığı mode'u döndürür.
     pub(super) fn start_mode(&self) -> EncodationType {
         self.switches
             .first()
@@ -103,7 +103,7 @@ impl<'a> GenericPlan<'a> {
             .unwrap_or_else(|| self.current())
     }
 
-    /// Get the current encodation type (mode).
+    /// Geçerli encodation türünü (mode) döndürür.
     pub(super) fn current(&self) -> EncodationType {
         match self.plan {
             PlanImpl::Ascii(_) => EncodationType::Ascii,
@@ -139,7 +139,7 @@ impl<'a> GenericPlan<'a> {
                     switches
                 };
                 let mut ctx = ctx.clone();
-                ctx.write($cost_extra); // LATCH byte
+                ctx.write($cost_extra); // LATCH byte'ı
                 let mut new = $plan::new(ctx);
                 if let Some(_) = new.step() {
                     list.push(Self {
@@ -151,36 +151,36 @@ impl<'a> GenericPlan<'a> {
             };
         }
 
-        // Add switch to ASCII
+        // ASCII'ye geçiş ekler.
         if !self.is_ascii() && enabled_modes.contains(EncodationType::Ascii) {
             add_switch!(AsciiPlan, Ascii, 0);
         }
 
-        // Add switch to Base256
+        // Base256'ya geçiş ekler.
         if !matches!(self.plan, PlanImpl::Base256(_))
             && enabled_modes.contains(EncodationType::Base256)
         {
             add_switch!(Base256Plan, Base256, 1);
         }
 
-        // Add switch to Edifact
+        // Edifact'e geçiş ekler.
         if !matches!(self.plan, PlanImpl::Edifact(_))
             && enabled_modes.contains(EncodationType::Edifact)
         {
             add_switch!(EdifactPlan, Edifact, 1);
         }
 
-        // Add switch to X12
+        // X12'ye geçiş ekler.
         if !self.is_x12() && enabled_modes.contains(EncodationType::X12) {
             add_switch!(X12Plan, X12, 1);
         }
 
-        // Add switch to Text
+        // Text'e geçiş ekler.
         if !matches!(self.plan, PlanImpl::Text(_)) && enabled_modes.contains(EncodationType::Text) {
             add_switch!(TextPlan, Text, 1);
         }
 
-        // Add switch to C40
+        // C40'a geçiş ekler.
         if !self.is_c40() && enabled_modes.contains(EncodationType::C40) {
             add_switch!(C40Plan, C40, 1);
         }
@@ -198,16 +198,16 @@ impl<'a> GenericPlan<'a> {
         matches!(self.plan, PlanImpl::X12(_))
     }
 
-    /// Get the total cost after switching to the given mode.
+    /// Verilen mode'a geçişten sonraki toplam cost'u döndürür.
     pub(super) fn cost_for_switching_to(&self, other: EncodationType) -> Option<Frac> {
-        // switching to the mode itself is free
+        // Aynı mode'a geçiş cost oluşturmaz.
         if self.current() == other {
             return Some(self.cost());
         }
         match (&self.plan, other) {
-            // To Ascii is provided by the mode_switch_cost()
+            // Ascii'ye geçiş mode_switch_cost() tarafından sağlanır.
             (_, EncodationType::Ascii) => self.mode_switch_cost(),
-            // For others its the leave to ASCII, and +1 if not ASCII
+            // Diğerleri için önce ASCII'ye çıkış, hedef ASCII değilse ayrıca +1 gerekir.
             (_, EncodationType::Base256) => self.mode_switch_cost().map(|x| x + 2),
             (_, _) => self.mode_switch_cost().map(|x| x + 1),
         }
@@ -218,12 +218,12 @@ impl<'a> Plan for GenericPlan<'a> {
     type Context = Context<'a>;
 
     fn mode_switch_cost(&self) -> Option<Frac> {
-        // only add costs from previous modes
+        // Yalnızca önceki mode'ların cost'larını ekler.
         dispatch!(self, pl => pl.mode_switch_cost().map(|x| x + self.extra))
     }
 
     fn cost(&self) -> Frac {
-        // only add costs from previous modes
+        // Yalnızca önceki mode'ların cost'larını ekler.
         dispatch!(self, pl => pl.cost() + self.extra)
     }
 

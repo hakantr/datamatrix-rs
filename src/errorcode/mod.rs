@@ -1,38 +1,37 @@
-//! Reed-Solomon error correction codes.
+//! Reed–Solomon error correction code'ları.
 //!
-//! The error correction in a Data Matrix is done using Reed-Solomon codes.
+//! Data Matrix içindeki error correction, Reed–Solomon code'larıyla yapılır.
 //!
-//! Assuming you have never heard of coding theory: By putting some redundancy
-//! into the Data Matrix one can recover from, say, detection or printing errors
-//! when trying to read a Data Matrix. A clever way to add redundancy
-//! is the Reed-Solomon code. The details are relatively
-//! math heavy and involve, for example, "higher" algebra (Galois fields).
-//! Any book about coding theory should cover it, for example
-//! "Error Correction Coding: Mathematical Methods and Algorithms" by Moon.
+//! Coding theory hakkında bilginiz olmadığını varsayalım: Data Matrix'e bir miktar
+//! redundancy eklemek, okuma sırasında oluşan algılama veya baskı hatalarının
+//! giderilmesini sağlar. Redundancy eklemenin akıllı yollarından biri Reed–Solomon
+//! code'dur. Ayrıntılar yoğun matematik ve örneğin "yüksek" cebir (Galois fields)
+//! içerir. Coding theory hakkındaki kitaplar bu konuyu ele alır; Moon'un
+//! "Error Correction Coding: Mathematical Methods and Algorithms" kitabı bir örnektir.
 //!
-//! While there is only way to compute the error code (called _encoding_),
-//! there are several algorithms for error correction (called _decoding_).
+//! Error code'u hesaplamanın (_encoding_) tek yolu varken error correction
+//! (_decoding_) için birden fazla algoritma vardır.
 //!
-//! The decoder implemented in this module is _syndrome_ based. Such a decoder
-//! is classically made of four main steps:
+//! Bu modülde uygulanan decoder _syndrome_ tabanlıdır. Böyle bir decoder klasik
+//! olarak dört ana adımdan oluşur:
 //!
-//! 1. Compute the syndrome values.
-//! 2. Compute the error locator polynomial
-//! 3. Compute the error locations.
-//! 4. Compute the error values.
+//! 1. Syndrome değerlerini hesapla.
+//! 2. Error locator polynomial değerini hesapla.
+//! 3. Hata konumlarını hesapla.
+//! 4. Hata değerlerini hesapla.
 //!   
-//! We use a Levinson-Durbin algorithm in the second step. See
-//! the article ["Levinson-Durbin Algorithm Used For Fast BCH Decoding"](https://doi.org/10.1007/978-1-4615-6119-4_1)
-//! by Michael Schmidt and Gerhard P. Fettweis. This approach was empiricially
-//! verified to be better than a LU decomposition and it did also beat
-//! the Berlekamp-Massey algorithm (about 10% faster).
+//! İkinci adımda Levinson–Durbin algoritması kullanılır. Michael Schmidt ve
+//! Gerhard P. Fettweis'in ["Levinson-Durbin Algorithm Used For Fast BCH Decoding"](https://doi.org/10.1007/978-1-4615-6119-4_1)
+//! makalesine bakın. Bu yaklaşımın deneysel olarak LU decomposition'dan daha iyi
+//! olduğu doğrulanmış ve Berlekamp–Massey algoritmasından yaklaşık %10 daha hızlı
+//! olduğu görülmüştür.
 //!
-//! Furthermore, in step four the [Björck-Pereyra algorithm](https://doi.org/10.1090/S0025-5718-1970-0290541-1)
-//! is used to determine the error values. It was faster than Forney's algorithm
-//! and also faster than a naive LU decomposition in our tests.
+//! Dördüncü adımda hata değerlerini belirlemek için [Björck–Pereyra algoritması](https://doi.org/10.1090/S0025-5718-1970-0290541-1)
+//! kullanılır. Testlerde Forney algoritmasından ve basit LU decomposition'dan
+//! daha hızlı olduğu görülmüştür.
 //!
-//! The other possibilities mentionend for step 2 and 4
-//! are still in the source code in case someone is interested in them.
+//! İlgilenenler için ikinci ve dördüncü adımlarda kullanılabilecek diğer
+//! seçenekler de kaynak kodda tutulmaktadır.
 mod decoding;
 mod galois;
 
@@ -47,8 +46,6 @@ pub use decoding::decode as decode_error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorEncodingError {
     DataSize { expected: usize, actual: usize },
-    MissingGenerator { error_codewords: usize },
-    InternalError(&'static str),
 }
 
 impl core::fmt::Display for ErrorEncodingError {
@@ -58,13 +55,6 @@ impl core::fmt::Display for ErrorEncodingError {
                 f,
                 "Reed–Solomon kodlaması {expected} data codeword bekliyordu, {actual} verildi"
             ),
-            Self::MissingGenerator { error_codewords } => write!(
-                f,
-                "{error_codewords} error codeword için generator polynomial tanımlı değil"
-            ),
-            Self::InternalError(message) => {
-                write!(f, "Reed–Solomon kodlayıcı iç hatası: {message}")
-            }
         }
     }
 }
@@ -74,11 +64,11 @@ impl core::error::Error for ErrorEncodingError {}
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// The coefficients of the generator polynomicals used
-/// by the Reed-Solomon code specified for Data Matrix.
+/// Data Matrix için tanımlanan Reed–Solomon code'un kullandığı generator
+/// polynomial katsayıları.
 ///
-/// The coefficients are given in the standard, but can also
-/// be computed with the Python script "gf.py" in this repository.
+/// Katsayılar standartta verilir; ayrıca repodaki "gf.py" Python script'i ile
+/// hesaplanabilir.
 const GENERATOR_POLYNOMIALS: [&[u8]; 25] = [
     // 5
     &[1, 62, 111, 15, 48, 228],
@@ -203,18 +193,23 @@ const GENERATOR_POLYNOMIALS: [&[u8]; 25] = [
 fn generator(len: usize) -> Option<&'static [u8]> {
     GENERATOR_POLYNOMIALS
         .iter()
-        .find(|p| p.len() - 1 == len)
+        .find(|p| p.len().checked_sub(1) == Some(len))
         .copied()
 }
 
-/// Compute the Reed-Solomon code used by Data Matrix for error correction.
+/// Data Matrix'in error correction için kullandığı Reed–Solomon code'u hesaplar.
 ///
-/// Depending on the symbol size, the data is first split up into
-/// interleaved blocks. For each block an error code is computed.
-/// The resulting blocks of error codes are returned interleaved.
+/// Symbol size değerine bağlı olarak data önce interleaved block'lara ayrılır.
+/// Her block için bir error code hesaplanır ve sonuç block'ları interleaved
+/// biçimde döndürülür.
 ///
 /// `data` uzunluğu symbol size için gereken data codeword sayısıyla eşleşmezse
 /// [ErrorEncodingError::DataSize] döndürür.
+///
+/// # Hatalar
+///
+/// `data` uzunluğu seçilen symbol size değerinin data codeword sayısıyla
+/// eşleşmiyorsa hata döndürür.
 pub fn encode_error(data: &[u8], size: SymbolSize) -> Result<Vec<u8>, ErrorEncodingError> {
     let setup = size.block_setup();
     let num_codewords = size.num_data_codewords();
@@ -224,109 +219,93 @@ pub fn encode_error(data: &[u8], size: SymbolSize) -> Result<Vec<u8>, ErrorEncod
             actual: data.len(),
         });
     }
-    let r#gen = generator(setup.num_ecc_per_block).ok_or(ErrorEncodingError::MissingGenerator {
-        error_codewords: setup.num_ecc_per_block,
-    })?;
-    // For bigger symbol sizes the data is split up into interleaved blocks
-    // for which an error code is computed individually. we store
-    // the error blocks interleaved in the returned result.
+    let Some(r#gen) = generator(setup.num_ecc_per_block) else {
+        crate::invariant_violation("symbol size için generator polynomial tanımlı değil");
+    };
+    // Büyük symbol size değerlerinde data interleaved block'lara ayrılır ve her biri
+    // için ayrı error code hesaplanır. Error block'ları sonuçta interleaved tutulur.
     let stride = setup.num_ecc_blocks;
-    let mut ecc = vec![0; setup.num_ecc_per_block + 1];
-    let mut full_ecc = vec![0; setup.num_ecc_per_block * setup.num_ecc_blocks];
+    if stride == 0 {
+        crate::invariant_violation("Reed–Solomon interleaved block sayısı sıfır");
+    }
+    let Some(ecc_len) = setup.num_ecc_per_block.checked_add(1) else {
+        crate::invariant_violation("Reed–Solomon arabellek uzunluğu hesaplanırken taşma oluştu");
+    };
+    let Some(full_ecc_len) = setup.num_ecc_per_block.checked_mul(setup.num_ecc_blocks) else {
+        crate::invariant_violation("error codeword sayısı hesaplanırken taşma oluştu");
+    };
+    let mut ecc = vec![0; ecc_len];
+    let mut full_ecc = vec![0; full_ecc_len];
     for block in 0..setup.num_ecc_blocks {
         ecc.fill(0);
         let strided_data_input = data.iter().copied().skip(block).step_by(stride);
-        ecc_block(strided_data_input, r#gen, &mut ecc)?;
+        ecc_block(strided_data_input, r#gen, &mut ecc);
 
         // Error block'u sonuç vektörüne interleaved biçimde kopyala.
-        let block_ecc =
-            ecc.get(..setup.num_ecc_per_block)
-                .ok_or(ErrorEncodingError::InternalError(
-                    "hesaplanan error block beklenenden kısa",
-                ))?;
+        let Some(block_ecc) = ecc.get(..setup.num_ecc_per_block) else {
+            crate::invariant_violation("hesaplanan error block beklenenden kısa");
+        };
         for (result, ecc_i) in full_ecc
             .iter_mut()
             .skip(block)
             .step_by(stride)
             .zip(block_ecc)
         {
-            debug_assert_eq!(*result, 0);
             *result = *ecc_i;
         }
     }
     Ok(full_ecc)
 }
 
-fn ecc_block<T: Iterator<Item = u8>>(
-    data: T,
-    g: &[u8],
-    ecc: &mut [u8],
-) -> Result<(), ErrorEncodingError> {
-    // Let d be the data polynomical (n coefficients) and g the generating polynomical
-    // with k + 1 coefficients.
+fn ecc_block<T: Iterator<Item = u8>>(data: T, g: &[u8], ecc: &mut [u8]) {
+    // d, n katsayılı data polynomial; g ise k + 1 katsayılı generator polynomial olsun.
     //
-    // We use a variant of euclidean polynomical division on the input polynomials
-    // d(x) * x^k and g to get a quotient q and remainder r such that
+    // q bölümünü ve r kalanını elde etmek için d(x) * x^k ile g input polynomial'ları
+    // üzerinde Euclidean polynomial division'ın bir çeşidi kullanılır:
     //
     //     d(x) * x^k = q(x) g(x) + r(x).
     //
-    // The error code then is -r(x) = r(x), because
+    // Error code -r(x) = r(x)'tir; çünkü
     //
     //     d(x) * x^k - r(x)
     //
-    // is then divisible by g. The first n bytes will contain the data, and
-    // the last k the error code, i.e., the coefficient of r. The algorithm
-    // is modified to not compute q and store r directly in ecc. The ecc
-    // array is used to store intermediate results.
-    let ecc_len = g
-        .len()
-        .checked_sub(1)
-        .ok_or(ErrorEncodingError::InternalError(
-            "generator polynomial boş",
-        ))?;
+    // ifadesi g ile bölünebilir. İlk n byte data'yı, son k byte error code'u,
+    // yani r katsayılarını içerir. Algoritma q'yu hesaplamayacak ve r'yi doğrudan
+    // ecc içinde saklayacak biçimde değiştirilmiştir. ecc array ara sonuçları tutar.
+    let Some(ecc_len) = g.len().checked_sub(1) else {
+        crate::invariant_violation("generator polynomial boş");
+    };
     for a in data {
-        let first = ecc
-            .first()
-            .copied()
-            .ok_or(ErrorEncodingError::InternalError(
-                "error codeword arabelleği boş",
-            ))?;
+        let Some(first) = ecc.first().copied() else {
+            crate::invariant_violation("error codeword arabelleği boş");
+        };
         let k = GF(first) + GF(a);
         for j in 0..ecc_len {
-            let next_index = j.checked_add(1).ok_or(ErrorEncodingError::InternalError(
-                "error codeword konumu hesaplanırken taşma oluştu",
-            ))?;
-            let next = ecc
-                .get(next_index)
-                .copied()
-                .ok_or(ErrorEncodingError::InternalError(
-                    "sonraki error codeword bulunamadı",
-                ))?;
-            let coefficient =
-                g.get(next_index)
-                    .copied()
-                    .ok_or(ErrorEncodingError::InternalError(
-                        "generator polynomial katsayısı bulunamadı",
-                    ))?;
-            let value = ecc.get_mut(j).ok_or(ErrorEncodingError::InternalError(
-                "yazılacak error codeword konumu bulunamadı",
-            ))?;
+            let Some(next_index) = j.checked_add(1) else {
+                crate::invariant_violation("error codeword konumu hesaplanırken taşma oluştu");
+            };
+            let Some(next) = ecc.get(next_index).copied() else {
+                crate::invariant_violation("sonraki error codeword bulunamadı");
+            };
+            let Some(coefficient) = g.get(next_index).copied() else {
+                crate::invariant_violation("generator polynomial katsayısı bulunamadı");
+            };
+            let Some(value) = ecc.get_mut(j) else {
+                crate::invariant_violation("yazılacak error codeword konumu bulunamadı");
+            };
             *value = (GF(next) + k * GF(coefficient)).into();
         }
     }
-    Ok(())
 }
 
 #[test]
-fn ecc_block_1() -> Result<(), ErrorEncodingError> {
+fn ecc_block_1() {
     // Test vakası Python script'i ile hesaplandı.
     let data = [23, 40, 11];
-    let generator = GENERATOR_POLYNOMIALS
-        .first()
-        .copied()
-        .ok_or(ErrorEncodingError::MissingGenerator { error_codewords: 5 })?;
+    let Some(generator) = GENERATOR_POLYNOMIALS.first().copied() else {
+        crate::invariant_violation("test için generator polynomial bulunamadı");
+    };
     let mut ecc = vec![0; 5 + 1];
-    ecc_block(data.iter().cloned(), generator, &mut ecc)?;
+    ecc_block(data.iter().cloned(), generator, &mut ecc);
     assert_eq!(ecc.get(..5), Some([255, 207, 37, 244, 81].as_slice()));
-    Ok(())
 }

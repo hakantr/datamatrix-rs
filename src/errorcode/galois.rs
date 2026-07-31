@@ -1,30 +1,26 @@
-//! This module contains the implementation of the GF(256) arithmetic used by
-//! the Reed-Solomon codes in Data Matrix.
+//! Bu modül, Data Matrix Reed–Solomon code'larının kullandığı GF(256) aritmetiğinin
+//! implementasyonunu içerir.
 //!
-//! The default representation of an element in GF(256) we use is given by a
-//! an u8 (8bit integer) value. Its bits correspond to the coefficients of a
-//! degree 7 polynomial with the least significand bit being the coefficient
-//! for 1. For example:
+//! GF(256) içindeki bir öğenin varsayılan gösterimi u8 (8-bit integer) değeridir.
+//! Bitleri, en düşük anlamlı bit 1'in katsayısı olacak biçimde 7. derece bir
+//! polynomial'ın katsayılarına karşılık gelir. Örneğin:
 //!
 //! > 242 = 0b11110010 = x^7 + x^6 + x^5 + x^4 + x.
 //!
-//! Addition can be done coefficient by coefficient, as with real (the usual)
-//! polynomials.
+//! Toplama, normal polynomial'larda olduğu gibi katsayı katsayı yapılabilir.
 //!
-//! Multiplying two polynomials can lead to powers of x higher than 7. So
-//! multiplication is defined modulo a fixed polynomial. This polynomial has to be
-//! chosen. Data Matrix uses the polynomial 301.
+//! İki polynomial'ı çarpmak x'in 7'den büyük kuvvetlerini oluşturabilir. Bu yüzden
+//! çarpma sabit bir polynomial'a göre modulo olarak tanımlanır. Data Matrix 301
+//! polynomial'ını kullanır.
 //!
-//! With this choice the powers of x up to x^255, so 1, x^1, x^2, ..., x^255
-//! will give us all numbers in GF(256) except for 0 (so the multiplicative sub
-//! group). We say "x is a generator". This also repeats, so x^256 = 1.
+//! Bu seçimle x'in x^255'e kadarki kuvvetleri, yani 1, x^1, x^2, ..., x^255,
+//! GF(256) içindeki 0 dışındaki bütün sayıları verir (multiplicative subgroup).
+//! Bu nedenle "x bir generator'dır" denir. Dizi tekrar eder ve x^256 = 1 olur.
 //!
-//! So we can identify any element
-//! of GF(256), except for 0, with a power i of x. If we now want to multiply,
-//! say, a and b we first lookup their powers, say, i and j. Then
-//! a * b = x^i * x^j = x^(i + j). Doing the inverse lookup of x^(i + j)
-//! gives us the result. These two lookup tables are called `LOG` and `ANTI_LOG`
-//! in this module.
+//! Böylece GF(256) içindeki 0 dışındaki her öğe x'in i kuvvetiyle tanımlanabilir.
+//! Örneğin a ve b çarpılacaksa önce bunların i ve j kuvvetleri bulunur. Ardından
+//! a * b = x^i * x^j = x^(i + j) hesaplanır. x^(i + j) için ters lookup sonucu
+//! verir. Bu iki lookup table modülde `LOG` ve `ANTI_LOG` olarak adlandırılır.
 use core::ops::{Add, Div, Mul, Sub};
 use core::{
     convert::From,
@@ -38,7 +34,7 @@ use alloc::vec::Vec;
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Compute two lookup tables for GF(256).
+/// GF(256) için iki lookup table hesaplar.
 #[expect(
     clippy::indexing_slicing,
     reason = "Döngü sınırları i < 255 ve indirgeme sonrası p < 256 olmasını garanti eder"
@@ -46,17 +42,15 @@ use pretty_assertions::assert_eq;
 const fn compute_alog_log() -> ([u8; 255], [u8; 256]) {
     let mut alog = [0u8; 255];
     let mut log = [0u8; 256];
-    let mut p: u16 = 1; // polynomial representation
-    let mut i: u8 = 0; // power
+    let mut p: u16 = 1; // Polynomial gösterimi
+    let mut i: u8 = 0; // Kuvvet
     while i < 255 {
         alog[i as usize] = p as u8;
         log[p as usize] = i;
 
-        // With 0x12D as the irreducible polynomical used
-        // to define multiplication, x is a primitive
-        // element. So we can just compute x^i. This is was
-        // happens in the next few lines. Also see the Python
-        // code in extra/gf.py.
+        // Çarpmayı tanımlayan irreducible polynomial 0x12D olduğunda x bir
+        // primitive element'tir. Bu nedenle doğrudan x^i hesaplanabilir. Aşağıdaki
+        // satırlar bunu yapar; extra/gf.py içindeki Python koduna da bakın.
         p *= 2;
         if p >= 256 {
             p ^= 0x12D;
@@ -67,29 +61,35 @@ const fn compute_alog_log() -> ([u8; 255], [u8; 256]) {
     (alog, log)
 }
 
-/// Lookup table to convert element from GF(256) represented as power i of
-/// a generator a to a polynomial of degree 7.
+/// GF(256) öğesini generator a'nın i kuvveti gösteriminden 7. derece polynomial'a
+/// dönüştüren lookup table.
 const ANTI_LOG: [u8; 255] = compute_alog_log().0;
 
-/// Lookup table to convert an element from GF(256) represented as a degree 7 polynomial
-/// to a power i for a generator a.
+/// GF(256) öğesini 7. derece polynomial gösteriminden generator a'nın i kuvvetine
+/// dönüştüren lookup table.
 const LOG: [u8; 256] = compute_alog_log().1;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct GF(pub u8);
 
 impl GF {
-    // Return iterator for 1, x, x^2, x^3, ...
+    // 1, x, x^2, x^3, ... için iterator döndürür.
     pub fn primitive_powers() -> impl Iterator<Item = Self> {
         ANTI_LOG.iter().map(|x| Self(*x)).cycle()
     }
 
     pub fn primitive_power(i: u8) -> Self {
-        GF(ANTI_LOG.get(usize::from(i)).copied().unwrap_or(0))
+        let Some(value) = ANTI_LOG.get(usize::from(i)).copied() else {
+            crate::invariant_violation("GF(256) primitive power indeksi tablo sınırını aştı");
+        };
+        GF(value)
     }
 
     pub fn log(self) -> usize {
-        LOG.get(usize::from(self.0)).copied().unwrap_or(0) as usize
+        let Some(value) = LOG.get(usize::from(self.0)).copied() else {
+            crate::invariant_violation("GF(256) log indeksi tablo sınırını aştı");
+        };
+        usize::from(value)
     }
 }
 
@@ -136,10 +136,17 @@ impl Mul<GF> for GF {
         if self.0 == 0 || rhs.0 == 0 {
             return GF(0);
         }
-        let ia = LOG.get(usize::from(self.0)).copied().unwrap_or(0);
-        let ib = LOG.get(usize::from(rhs.0)).copied().unwrap_or(0);
+        let Some(ia) = LOG.get(usize::from(self.0)).copied() else {
+            crate::invariant_violation("GF(256) sol çarpanının log değeri bulunamadı");
+        };
+        let Some(ib) = LOG.get(usize::from(rhs.0)).copied() else {
+            crate::invariant_violation("GF(256) sağ çarpanının log değeri bulunamadı");
+        };
         let i = (ia as u16 + ib as u16) % 255;
-        GF(ANTI_LOG.get(usize::from(i)).copied().unwrap_or(0))
+        let Some(value) = ANTI_LOG.get(usize::from(i)).copied() else {
+            crate::invariant_violation("GF(256) çarpımının anti-log değeri bulunamadı");
+        };
+        GF(value)
     }
 }
 
@@ -147,11 +154,11 @@ impl Mul<usize> for GF {
     type Output = Self;
 
     fn mul(self, rhs: usize) -> Self {
-        // Multiplication with usize is interpreted as
-        // n-times addition. Because elements are their own additive inverse
-        // we only check if the number of addition is even or odd.
+        // usize ile çarpma n kez toplama olarak yorumlanır. Öğeler kendi additive
+        // inverse değerleri olduğundan yalnızca toplama sayısının tek veya çift
+        // olduğu denetlenir.
         GF(self.0 * (rhs % 2) as u8)
-        // Alternative with cmov, but no mul:
+        // cmov kullanan ancak mul kullanmayan alternatif:
         // if rhs % 2 == 0 {
         //     Self(0)
         // } else {
@@ -173,13 +180,23 @@ impl Div<GF> for GF {
         if self.0 == 0 || rhs.0 == 0 {
             return GF(0);
         }
-        let ia = LOG.get(usize::from(self.0)).copied().unwrap_or(0);
-        let ib = LOG.get(usize::from(rhs.0)).copied().unwrap_or(0);
+        let Some(ia) = LOG.get(usize::from(self.0)).copied() else {
+            crate::invariant_violation("GF(256) bölüneninin log değeri bulunamadı");
+        };
+        let Some(ib) = LOG.get(usize::from(rhs.0)).copied() else {
+            crate::invariant_violation("GF(256) böleninin log değeri bulunamadı");
+        };
         let mut i = ia as i16 - ib as i16;
         if i < 0 {
             i += 255;
         }
-        GF(ANTI_LOG.get(i as usize).copied().unwrap_or(0))
+        let Ok(index) = usize::try_from(i) else {
+            crate::invariant_violation("GF(256) bölüm anti-log indeksi negatif kaldı");
+        };
+        let Some(value) = ANTI_LOG.get(index).copied() else {
+            crate::invariant_violation("GF(256) bölümünün anti-log değeri bulunamadı");
+        };
+        GF(value)
     }
 }
 

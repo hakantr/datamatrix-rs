@@ -1,14 +1,14 @@
-//! Data part de- and encoding.
+//! Data bölümünün decoding ve encoding işlemleri.
 //!
-//! The bytes encoded into a Data Matrix symbol consist of two parts,
-//! the first part is the actual information one wants to encode,
-//! the second part consists of error correction bytes.
+//! Data Matrix symbol içine encode edilen byte'lar iki bölümden oluşur. İlk bölüm
+//! encode edilmek istenen gerçek bilgiyi, ikinci bölüm error correction byte'larını
+//! içerir.
 //!
-//! The functions in this module can be used to de- and encode
-//! the first part, the data part.
+//! Bu modüldeki fonksiyonlar ilk bölümü, yani data bölümünü decode ve encode etmek
+//! için kullanılabilir.
 //!
-//! There is no reason I can think of for an end user of the library to ever call them directly
-//! but they can be useful if one needs to work on a lower level.
+//! Kütüphanenin son kullanıcısının bunları doğrudan çağırması normalde gerekmez;
+//! ancak daha düşük seviyede çalışırken yararlı olabilirler.
 use alloc::{string::String, vec::Vec};
 use flagset::FlagSet;
 
@@ -21,7 +21,7 @@ use super::{SymbolList, SymbolSize};
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Encode input to data codewords for Data Matrix.
+/// Input'u Data Matrix data codeword'lerine encode eder.
 pub fn encode_data(
     data: &[u8],
     symbol_list: &SymbolList,
@@ -51,10 +51,10 @@ pub(crate) fn encode_data_internal(
     encoder.codewords()
 }
 
-/// Number of data codewords the encoder emits before padding.
+/// Encoder'ın padding öncesinde ürettiği data codeword sayısı.
 ///
-/// Uses the same options as the default [`encode_data`] path (no ECI, no
-/// macros, no FNC1) so it can be compared against `planner::optimize_cost`.
+/// `planner::optimize_cost` ile karşılaştırılabilmesi için varsayılan
+/// [`encode_data`] yolu ile aynı seçenekleri kullanır: ECI, macro ve FNC1 yoktur.
 #[cfg(test)]
 pub(crate) fn encode_data_unpadded_len(
     data: &[u8],
@@ -65,21 +65,20 @@ pub(crate) fn encode_data_unpadded_len(
     encoder.unpadded_len().ok()
 }
 
-/// Compute a plan for when to switch encodation types during data encoding.
+/// Data encoding sırasında encodation türlerinin ne zaman değiştirileceğini planlar.
 ///
-/// Returns `None` if the `data` does not fit into the given `symbol_size`.
-/// Otherwise the function returns a vector of tuples `(usize, EncodationType)`
-/// which describe when to switch the mode. The first entry of the tuple
-/// is the number of input characters left at the point of the planned mode switch.
-/// For example, `(20, EncodationType::C40)` would mean that the mode shall be
-/// switched to C40 when only 20 characters remain to encode.
+/// `data` verilen `symbol_size` içine sığmazsa `None` döndürür. Aksi halde mode'un
+/// ne zaman değiştirileceğini açıklayan `(usize, EncodationType)` tuple'larından
+/// oluşan bir vektör döndürür. Tuple'ın ilk öğesi planlanan mode switch noktasında
+/// kalan input karakteri sayısıdır. Örneğin `(20, EncodationType::C40)`, encode
+/// edilecek yalnızca 20 karakter kaldığında C40'a geçileceğini belirtir.
 ///
-/// The plan is chosen to obtain a minimal encoding size. If there are
-/// multiple solutions, a plan is picked by first filtering by the "complexity"
-/// of the modes, and then by the number of mode switches. If there is still
-/// more than one possibility the returned plan is an implementation detail.
+/// Plan, en küçük encoding boyutunu elde edecek biçimde seçilir. Birden fazla
+/// çözüm varsa önce mode'ların "karmaşıklığına", ardından mode switch sayısına
+/// göre filtreleme yapılır. Hâlâ birden fazla seçenek varsa döndürülen plan bir
+/// implementasyon ayrıntısıdır.
 ///
-/// # Example
+/// # Örnek
 ///
 /// ```rust
 /// # use datamatrix::{data::encodation_plan, EncodationType, SymbolList};
@@ -100,7 +99,7 @@ pub fn encodation_plan(
     )
 }
 
-/// Try to convert an UTF-8 encoded string to Latin 1.
+/// UTF-8 encoded string'i Latin-1'e dönüştürmeyi dener.
 pub fn utf8_to_latin1(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len());
     for ch in s.chars() {
@@ -209,9 +208,9 @@ pub fn utf8_to_latin1(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Try to convert a Latin 1 encoded string to an UTF-8 string.
+/// Latin-1 encoded string'i UTF-8 string'e dönüştürmeyi dener.
 ///
-/// Fails if the input is contains invalid latin 1 characters.
+/// Input geçersiz Latin-1 karakterleri içerirse başarısız olur.
 pub fn latin1_to_utf8(latin1: &[u8]) -> Option<String> {
     let mut out = String::with_capacity(latin1.len());
     latin1_to_utf8_mut(latin1, &mut out)?;

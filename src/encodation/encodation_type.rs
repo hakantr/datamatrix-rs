@@ -3,10 +3,10 @@ use flagset::{FlagSet, flags};
 use super::{DataEncodingError, GenericDataEncoder, ascii, base256, c40, edifact, text, x12};
 
 flags! {
-    /// List of data encodation types
+    /// Data encodation türlerinin listesi.
     ///
-    /// Data Matrix can switch between different "codecs" in a symbol. Each one
-    /// has its strengths and weaknesses.
+    /// Data Matrix, tek bir symbol içinde farklı "codec"ler arasında geçiş
+    /// yapabilir. Her birinin güçlü ve zayıf yönleri vardır.
     pub enum EncodationType: u8 {
         Ascii   = 0b000001,
         C40     = 0b000010,
@@ -18,14 +18,13 @@ flags! {
 }
 
 impl EncodationType {
-    /// Get a fixed index between 0 and 5 for the encodation type.
+    /// Encodation türü için 0 ile 5 arasında sabit bir indeks döndürür.
     ///
-    /// The index also encodes the preferences of encodation types,
-    /// where lower numbers are better.
+    /// İndeks encodation türlerinin tercih sırasını da belirtir; küçük sayılar
+    /// daha çok tercih edilir.
     pub fn index(&self) -> usize {
         match self {
-            // Order is chosen based on my personal
-            // estimate of which modes are more complicated.
+            // Sıra, mode'ların karmaşıklığına ilişkin kişisel tahmine göre seçilmiştir.
             Self::Ascii => 0,
             Self::Base256 => 1,
             Self::Edifact => 2,
@@ -35,7 +34,7 @@ impl EncodationType {
         }
     }
 
-    /// Get flag set with all encodation types activated.
+    /// Bütün encodation türlerinin etkin olduğu flag set'i döndürür.
     pub fn all() -> FlagSet<Self> {
         FlagSet::full()
     }
@@ -58,7 +57,7 @@ impl EncodationType {
         matches!(self, EncodationType::Ascii)
     }
 
-    /// Get the LATCH codeword to switch to this mode from ASCII.
+    /// ASCII'den bu mode'a geçmek için gereken LATCH codeword'ü döndürür.
     pub(super) fn latch_from_ascii(&self) -> Option<u8> {
         match self {
             Self::Ascii => None,

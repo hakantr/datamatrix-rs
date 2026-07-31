@@ -5,7 +5,7 @@ use super::DataDecodingError;
 
 pub(crate) const ECI_UTF8: u32 = 26;
 
-/// Convert supported ECI sections to UTF-8.
+/// Desteklenen ECI bölümlerini UTF-8'e dönüştürür.
 pub fn convert(raw: &[u8], ecis: &[(usize, u32)]) -> Result<String, DataDecodingError> {
     let mut out = String::new();
     let end = (raw.len(), 0);
@@ -55,7 +55,7 @@ fn convert_chunk_extended(
         8 => ISO_8859_6,
         9 => ISO_8859_7,
         10 => ISO_8859_8,
-        // no support in encoding_rs as they are not allowed in HTML5
+        // HTML5 içinde izin verilmediğinden encoding_rs bunları desteklemez.
         // 11 => ISO_8859_9,
         // 13 => ISO_8859_11,
         12 => ISO_8859_10,
@@ -74,7 +74,7 @@ fn convert_chunk_extended(
         28 => BIG5,
         29 => GB18030,
         30 => EUC_KR,
-        _ => return Err(DataDecodingError::NotImplemented("unknown ECI charset")),
+        _ => return Err(DataDecodingError::NotImplemented("bilinmeyen ECI charset")),
     };
     let result = encoder.decode_without_bom_handling_and_without_replacement(bytes);
     out.push_str(&result.ok_or(DataDecodingError::CharsetError)?);
@@ -89,13 +89,13 @@ fn convert_chunk_extended(
 ) -> Result<(), DataDecodingError> {
     match eci {
         0..=13 | 15..=18 | 20..=30 => Err(DataDecodingError::NotImplemented(
-            "compiled without support for this ECI charset, enable feature extended_eci",
+            "bu ECI charset desteği derlemeye dahil değil; extended_eci feature'ını etkinleştirin",
         )),
-        _ => Err(DataDecodingError::NotImplemented("unknown ECI charset")),
+        _ => Err(DataDecodingError::NotImplemented("bilinmeyen ECI charset")),
     }
 }
 
-// Source: ftp://ftp.unicode.org/Public/MAPPINGS/ISO8859/8859-11.TXT
+// Kaynak: ftp://ftp.unicode.org/Public/MAPPINGS/ISO8859/8859-11.TXT
 const ISO_8859_11: [char; 88] = [
     '\u{00A0}', '\u{0E01}', '\u{0E02}', '\u{0E03}', '\u{0E04}', '\u{0E05}', '\u{0E06}', '\u{0E07}',
     '\u{0E08}', '\u{0E09}', '\u{0E0A}', '\u{0E0B}', '\u{0E0C}', '\u{0E0D}', '\u{0E0E}', '\u{0E0F}',
@@ -123,7 +123,7 @@ fn decode_iso_8859_11(bytes: &[u8], out: &mut String) -> Result<(), DataDecoding
     Ok(())
 }
 
-// Source: ftp://ftp.unicode.org/Public/MAPPINGS/ISO8859/8859-9.TXT
+// Kaynak: ftp://ftp.unicode.org/Public/MAPPINGS/ISO8859/8859-9.TXT
 const ISO_8859_9: [char; 96] = [
     '\u{00A0}', '\u{00A1}', '\u{00A2}', '\u{00A3}', '\u{00A4}', '\u{00A5}', '\u{00A6}', '\u{00A7}',
     '\u{00A8}', '\u{00A9}', '\u{00AA}', '\u{00AB}', '\u{00AC}', '\u{00AD}', '\u{00AE}', '\u{00AF}',

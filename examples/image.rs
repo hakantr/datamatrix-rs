@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // "Hello, World!" verisini sığabildiği en küçük kareye encode eder.
     let bitmap =
-        DataMatrix::encode(b"Hello, World!", SymbolList::default().enforce_square())?.bitmap()?;
+        DataMatrix::encode(b"Hello, World!", SymbolList::default().enforce_square())?.bitmap();
 
     // Data Matrix ve quiet zone içeren bir görsel oluşturur.
     let width = bitmap

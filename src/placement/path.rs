@@ -4,38 +4,38 @@ use core::cell::Cell;
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-use super::{Bitmap, BitmapConversionError};
+use super::Bitmap;
+#[cfg(test)]
+use super::BitmapConversionError;
 type N = isize;
 
-/// Segment of a vector graphics path.
+/// Vector grafik path segment'i.
 ///
-/// This is used in the [path() function](Bitmap::path) of the [Bitmap struct](Bitmap).
-/// See the documentation there for more details.
+/// [Bitmap yapısının](Bitmap) [path() fonksiyonunda](Bitmap::path) kullanılır.
+/// Ayrıntılar için ilgili dokümantasyona bakın.
 #[derive(Debug, PartialEq)]
 pub enum PathSegment {
-    /// Represents a relative move without drawing.
+    /// Çizim yapmadan relative hareketi temsil eder.
     ///
-    /// The first entry is the relative x distance `dx` (so the horizontal distance),
-    /// and the second entry is the relative vertical distance `dy`. This segment begins a new
-    /// subpath.
+    /// İlk öğe relative x mesafesi `dx` (yatay mesafe), ikinci öğe relative dikey
+    /// mesafe `dy` değeridir. Bu segment yeni bir subpath başlatır.
     ///
-    /// This is like a `m` entry in a SVG path, but there the order of `dx` and `dy` are
-    /// switched.
+    /// SVG path içindeki `m` öğesine benzer ancak orada `dx` ve `dy` sırası terstir.
     ///
-    /// A list of path segments returned by [path()](Bitmap::path) does _not_
-    /// start with this. The first path is assumed to start implicitly.
+    /// [path()](Bitmap::path) tarafından döndürülen path segment listesi bununla
+    /// başlamaz; ilk path'in örtük olarak başladığı varsayılır.
     Move(isize, isize),
-    /// A horizontal draw, relative distance.
+    /// Relative mesafeli yatay çizim.
     ///
-    /// This is like a `h` entry in a SVG path.
+    /// SVG path içindeki `h` öğesine benzer.
     Horizontal(isize),
-    /// A vertical draw, relative distance.
+    /// Relative mesafeli dikey çizim.
     ///
-    /// This is like a `v` entry in a SVG path.
+    /// SVG path içindeki `v` öğesine benzer.
     Vertical(isize),
-    /// Close the current (sub)path. Can occur multiple times.
+    /// Geçerli subpath'i kapatır. Birden fazla kez oluşabilir.
     ///
-    /// This is like a `z` entry in a SVG path.
+    /// SVG path içindeki `z` öğesine benzer.
     Close,
 }
 
@@ -46,89 +46,89 @@ enum MicroStep {
 }
 
 impl Bitmap<bool> {
-    /// Get vector path drawing instructions for this bitmap.
+    /// Bu bitmap için vector path çizim komutlarını döndürür.
     ///
-    /// This function computes a sequence of relative draw, relative move, and close instructions.
-    /// The resulting path shows the bitmap if filled properly (see below).
+    /// Relative çizim, hareket ve kapatma komutlarından oluşan bir dizi hesaplar.
+    /// Sonuç path doğru doldurulduğunda bitmap'i gösterir; aşağıya bakın.
     ///
-    /// The coordinate system is identical to the one of the function [pixels()](Self::pixels).
-    /// The starting position is not needed in this function because only
-    /// relative coordinates are returned.
+    /// Koordinat sistemi [pixels()](Self::pixels) fonksiyonuyla aynıdır. Yalnızca
+    /// relative koordinatlar döndürüldüğünden başlangıç konumu gerekmez.
     ///
-    /// # Filling rule
+    /// # Doldurma kuralı
     ///
-    /// The even-odd filling rule (as known in vector graphics) must be used. It is supported
-    /// by many vector graphic formats, including SVG and PDF.
+    /// Vector grafiklerde bilinen even-odd doldurma kuralı kullanılmalıdır. SVG ve
+    /// PDF dahil birçok vector grafik formatı bunu destekler.
     ///
-    /// # Example
+    /// # Örnek
     ///
-    /// The `examples/` directory contains a SVG, EPS and PDF code example using this
-    /// helper.
+    /// `examples/` dizini bu yardımcıyı kullanan SVG, EPS ve PDF kod örnekleri içerir.
     ///
-    /// # Implementation
+    /// # Implementasyon
     ///
-    /// The outline is modeled as a graph which is then decomposed into
-    /// Eulerian circuits.
-    pub fn path(&self) -> Result<Vec<PathSegment>, BitmapConversionError> {
-        let mut graph = bits_to_edge_graph(&self.bits, self.width(), self.height())?;
+    /// Dış hat bir graph olarak modellenir ve ardından Eulerian circuit'lere ayrılır.
+    pub fn path(&self) -> Vec<PathSegment> {
+        let mut graph = bits_to_edge_graph(&self.bits, self.width(), self.height());
         let mut pos = if let Some(pos) = graph.edge_left() {
             pos
         } else {
-            return Ok(vec![]);
+            return vec![];
         };
         let mut elements = Vec::new();
 
         let mut alternatives = Vec::new();
         let mut insert: usize = 0;
-        // loop over the eulerian walks in the graph (composed of multiple in general)
+        // Graph içindeki, genellikle birden fazla parçadan oluşan Eulerian walk'ları dolaşır.
         loop {
-            // complete an Eulerian tour, Hierholzer's algorithm
+            // Hierholzer algoritmasıyla bir Eulerian tour tamamlar.
             'euler: loop {
                 let mut local_loop = Vec::new();
                 let insert_pos = insert;
 
                 if !graph.remove_edge(&pos) {
-                    return Err(BitmapConversionError::InternalError(
-                        "Eulerian path başlangıç kenarı bulunamadı",
-                    ));
+                    crate::invariant_violation("Eulerian path başlangıç kenarı bulunamadı");
                 }
                 let start = pos.start_node();
                 local_loop.push(MicroStep::Step(pos.end_node()));
-                insert = insert
-                    .checked_add(1)
-                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+                let Some(next_insert) = insert.checked_add(1) else {
+                    crate::invariant_violation("Eulerian path uzunluğu hesaplanırken taşma oluştu");
+                };
+                insert = next_insert;
 
-                // walk until we find start node again
+                // Başlangıç node'u yeniden bulunana kadar ilerler.
                 loop {
                     let (new_pos, had_alternatives) = graph.follow(&pos);
                     if had_alternatives {
                         alternatives.push((insert, pos));
                     }
-                    pos = new_pos.ok_or(BitmapConversionError::InternalError(
-                        "Eulerian path geçerli bir sonraki kenar bulamadı",
-                    ))?;
+                    let Some(new_pos) = new_pos else {
+                        crate::invariant_violation(
+                            "Eulerian path geçerli bir sonraki kenar bulamadı",
+                        );
+                    };
+                    pos = new_pos;
                     if !graph.remove_edge(&pos) {
-                        return Err(BitmapConversionError::InternalError(
-                            "Eulerian path üzerindeki kenar kaldırılamadı",
-                        ));
+                        crate::invariant_violation("Eulerian path üzerindeki kenar kaldırılamadı");
                     }
                     let end = pos.end_node();
                     local_loop.push(MicroStep::Step(end));
                     if end == start {
                         break;
                     }
-                    insert = insert
-                        .checked_add(1)
-                        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+                    let Some(next_insert) = insert.checked_add(1) else {
+                        crate::invariant_violation(
+                            "Eulerian path uzunluğu hesaplanırken taşma oluştu",
+                        );
+                    };
+                    insert = next_insert;
                 }
                 if insert_pos > elements.len() {
-                    return Err(BitmapConversionError::InternalError(
+                    crate::invariant_violation(
                         "Eulerian path ekleme konumu çıktı sınırlarının dışında",
-                    ));
+                    );
                 }
                 elements.splice(insert_pos..insert_pos, local_loop.drain(..));
 
-                // are there remaining edges for this euler walk?
+                // Bu Eulerian walk için kalan edge var mı?
                 for (idx, pos_alt) in alternatives.drain(..) {
                     if let Some(new_pos) = graph.can_step(&pos_alt) {
                         pos = new_pos;
@@ -139,7 +139,7 @@ impl Bitmap<bool> {
                 break;
             }
 
-            // are there edges remaining in the graph, then start a new Eulerian tour
+            // Graph içinde edge kaldıysa yeni bir Eulerian tour başlatır.
             if let Some(new_pos) = graph.edge_left() {
                 elements.push(MicroStep::Jump(new_pos.start_node()));
                 pos = new_pos;
@@ -152,65 +152,67 @@ impl Bitmap<bool> {
     }
 }
 
-fn compress_path(
-    micro_steps: impl Iterator<Item = MicroStep>,
-) -> Result<Vec<PathSegment>, BitmapConversionError> {
+fn compress_path(micro_steps: impl Iterator<Item = MicroStep>) -> Vec<PathSegment> {
     let mut steps = Vec::new();
     let mut pos = (0, 0);
 
-    // step, "work in progress"
+    // İşlenmekte olan step
     let mut step_wip = None;
     for micro_step in micro_steps {
         match micro_step {
             MicroStep::Step((i, j)) => {
                 match step_wip {
-                    // check if we can combine step with step_wip
+                    // Step'in step_wip ile birleştirilip birleştirilemeyeceğini denetler.
                     Some(PathSegment::Horizontal(m)) if i == pos.0 => {
-                        let distance = checked_sub(j, pos.1)?;
-                        step_wip = Some(PathSegment::Horizontal(checked_add(m, distance)?));
+                        let distance = checked_sub(j, pos.1);
+                        step_wip = Some(PathSegment::Horizontal(checked_add(m, distance)));
                     }
                     Some(PathSegment::Vertical(m)) if j == pos.1 => {
-                        let distance = checked_sub(i, pos.0)?;
-                        step_wip = Some(PathSegment::Vertical(checked_add(m, distance)?));
+                        let distance = checked_sub(i, pos.0);
+                        step_wip = Some(PathSegment::Vertical(checked_add(m, distance)));
                     }
-                    // start new step_wip
+                    // Yeni step_wip başlatır.
                     mut other => {
                         if let Some(other) = other.take() {
                             steps.push(other);
                         }
                         if i == pos.0 {
-                            step_wip = Some(PathSegment::Horizontal(checked_sub(j, pos.1)?));
+                            step_wip = Some(PathSegment::Horizontal(checked_sub(j, pos.1)));
                         } else {
-                            step_wip = Some(PathSegment::Vertical(checked_sub(i, pos.0)?));
+                            step_wip = Some(PathSegment::Vertical(checked_sub(i, pos.0)));
                         }
                     }
                 }
                 pos = (i, j);
             }
             MicroStep::Jump((i, j)) => {
-                // drop content of step_wip, just add close
+                // step_wip içeriğini bırakır ve yalnızca close ekler.
                 step_wip = None;
                 steps.push(PathSegment::Close);
                 steps.push(PathSegment::Move(
-                    checked_sub(j, pos.1)?,
-                    checked_sub(i, pos.0)?,
+                    checked_sub(j, pos.1),
+                    checked_sub(i, pos.0),
                 ));
                 pos = (i, j);
             }
         }
     }
     steps.push(PathSegment::Close);
-    Ok(steps)
+    steps
 }
 
-fn checked_add(left: N, right: N) -> Result<N, BitmapConversionError> {
-    left.checked_add(right)
-        .ok_or(BitmapConversionError::ArithmeticOverflow)
+fn checked_add(left: N, right: N) -> N {
+    let Some(value) = left.checked_add(right) else {
+        crate::invariant_violation("path koordinatı toplanırken taşma oluştu");
+    };
+    value
 }
 
-fn checked_sub(left: N, right: N) -> Result<N, BitmapConversionError> {
-    left.checked_sub(right)
-        .ok_or(BitmapConversionError::ArithmeticOverflow)
+fn checked_sub(left: N, right: N) -> N {
+    let Some(value) = left.checked_sub(right) else {
+        crate::invariant_violation("path koordinatı çıkarılırken taşma oluştu");
+    };
+    value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -232,7 +234,7 @@ impl Direction {
     }
 }
 
-/// Oriented position in the graph on an edge.
+/// Graph içindeki bir edge üzerinde yönlendirilmiş konum.
 #[derive(Debug, Clone, PartialEq)]
 struct Position {
     i: N,
@@ -241,7 +243,7 @@ struct Position {
 }
 
 impl Position {
-    /// Get node coordinate of the node the position points to.
+    /// Konumun işaret ettiği node'un koordinatını döndürür.
     fn end_node(&self) -> (N, N) {
         let i = self.i;
         let j = self.j;
@@ -252,7 +254,7 @@ impl Position {
         }
     }
 
-    /// Get node coordinate of the node the position comes from.
+    /// Konumun geldiği node'un koordinatını döndürür.
     fn start_node(&self) -> (N, N) {
         self.flip().end_node()
     }
@@ -314,12 +316,12 @@ struct Graph {
 }
 
 impl Graph {
-    /// Check if the left edge of cell `(i, j)` is part of the graph.
+    /// `(i, j)` hücresinin sol edge'inin graph içinde olup olmadığını denetler.
     fn left(&self, i: N, j: N) -> bool {
         self.edge(i, j).is_some_and(|edge| edge.left)
     }
 
-    /// Check if the top edge of cell `(i, j)` is part of the graph.
+    /// `(i, j)` hücresinin üst edge'inin graph içinde olup olmadığını denetler.
     fn top(&self, i: N, j: N) -> bool {
         self.edge(i, j).is_some_and(|edge| edge.top)
     }
@@ -352,19 +354,18 @@ impl Graph {
             .and_then(|index| self.edges.get(index))
     }
 
-    /// Check if there is any edge in the graph that could be reached from the position.
+    /// Konumdan erişilebilecek bir graph edge'i olup olmadığını denetler.
     ///
-    /// See also [Self::follow()].
+    /// Ayrıca [Self::follow()] yöntemine bakın.
     fn can_step(&self, pos: &Position) -> Option<Position> {
         None.or_else(|| Some(pos.straight()).filter(|p| self.has_edge(p)))
             .or_else(|| Some(pos.left()).filter(|p| self.has_edge(p)))
             .or_else(|| Some(pos.right()).filter(|p| self.has_edge(p)))
     }
 
-    /// Return a new position that can be reached from a given position.
+    /// Verilen konumdan erişilebilen yeni bir konum döndürür.
     ///
-    /// Returns the new position and and a boolean that indicates whether
-    /// there was more than one possibility.
+    /// Yeni konumu ve birden fazla seçenek olup olmadığını belirten boolean değeri döndürür.
     fn follow(&self, pos: &Position) -> (Option<Position>, bool) {
         let mut found = None;
         let mut alternatives = false;
@@ -420,9 +421,9 @@ impl Graph {
         }
     }
 
-    /// Find a remaining position for the graph.
+    /// Graph için kalan bir konum bulur.
     ///
-    /// If no edges are left `None` is returned.
+    /// Edge kalmadıysa `None` döndürür.
     fn edge_left(&self) -> Option<Position> {
         let hint = self.edge_hint.get();
         let remaining = self.edges.get(hint..)?;
@@ -449,28 +450,25 @@ impl Graph {
     }
 }
 
-fn bits_to_edge_graph(
-    bits: &[bool],
-    width: usize,
-    height: usize,
-) -> Result<Graph, BitmapConversionError> {
-    let expected_bits = width
-        .checked_mul(height)
-        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+fn bits_to_edge_graph(bits: &[bool], width: usize, height: usize) -> Graph {
+    let Some(expected_bits) = width.checked_mul(height) else {
+        crate::invariant_violation("bitmap alanı hesaplanırken taşma oluştu");
+    };
     if bits.len() != expected_bits {
-        return Err(BitmapConversionError::DataSize);
+        crate::invariant_violation("bitmap data uzunluğu boyutlarıyla uyuşmuyor");
     }
-    let graph_width = width
-        .checked_add(1)
-        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-    let graph_height = height
-        .checked_add(1)
-        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-    N::try_from(graph_width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
-    N::try_from(graph_height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
-    let edge_count = graph_width
-        .checked_mul(graph_height)
-        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+    let Some(graph_width) = width.checked_add(1) else {
+        crate::invariant_violation("path graph genişliği hesaplanırken taşma oluştu");
+    };
+    let Some(graph_height) = height.checked_add(1) else {
+        crate::invariant_violation("path graph yüksekliği hesaplanırken taşma oluştu");
+    };
+    if N::try_from(graph_width).is_err() || N::try_from(graph_height).is_err() {
+        crate::invariant_violation("path graph boyutu isize sınırını aştı");
+    }
+    let Some(edge_count) = graph_width.checked_mul(graph_height) else {
+        crate::invariant_violation("path graph alanı hesaplanırken taşma oluştu");
+    };
     let mut graph = Graph {
         edges: vec![
             Edge {
@@ -488,44 +486,45 @@ fn bits_to_edge_graph(
 
     for i in 0..height {
         for j in 0..width {
-            let idx = i
-                .checked_mul(width)
-                .and_then(|row| row.checked_add(j))
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let Some(idx) = i.checked_mul(width).and_then(|row| row.checked_add(j)) else {
+                crate::invariant_violation("bitmap piksel konumu hesaplanırken taşma oluştu");
+            };
             if bits.get(idx).copied() != Some(true) {
                 continue;
             }
-            let cell = i
+            let Some(cell) = i
                 .checked_mul(graph_width)
                 .and_then(|row| row.checked_add(j))
-                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            else {
+                crate::invariant_violation("path graph hücresi hesaplanırken taşma oluştu");
+            };
             edge_hint.get_or_insert(cell);
             if j == 0 || bits.get(idx - 1).copied() == Some(false) {
-                // left
-                set_edge(&mut graph.edges, cell, EdgeSide::Left)?;
+                // Sol
+                set_edge(&mut graph.edges, cell, EdgeSide::Left);
             }
             if i == 0 || bits.get(idx - width).copied() == Some(false) {
-                // top
-                set_edge(&mut graph.edges, cell, EdgeSide::Top)?;
+                // Üst
+                set_edge(&mut graph.edges, cell, EdgeSide::Top);
             }
             if j == width - 1 || bits.get(idx + 1).copied() == Some(false) {
-                // right
-                let right = cell
-                    .checked_add(1)
-                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-                set_edge(&mut graph.edges, right, EdgeSide::Left)?;
+                // Sağ
+                let Some(right) = cell.checked_add(1) else {
+                    crate::invariant_violation("sağ path kenarı hesaplanırken taşma oluştu");
+                };
+                set_edge(&mut graph.edges, right, EdgeSide::Left);
             }
             if i == height - 1 || bits.get(idx + width).copied() == Some(false) {
-                // bottom
-                let bottom = cell
-                    .checked_add(graph_width)
-                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
-                set_edge(&mut graph.edges, bottom, EdgeSide::Top)?;
+                // Alt
+                let Some(bottom) = cell.checked_add(graph_width) else {
+                    crate::invariant_violation("alt path kenarı hesaplanırken taşma oluştu");
+                };
+                set_edge(&mut graph.edges, bottom, EdgeSide::Top);
             }
         }
     }
     graph.edge_hint.set(edge_hint.unwrap_or(graph.edges.len()));
-    Ok(graph)
+    graph
 }
 
 enum EdgeSide {
@@ -533,27 +532,24 @@ enum EdgeSide {
     Top,
 }
 
-fn set_edge(edges: &mut [Edge], index: usize, side: EdgeSide) -> Result<(), BitmapConversionError> {
-    let edge = edges
-        .get_mut(index)
-        .ok_or(BitmapConversionError::InternalError(
-            "path kenarı graph sınırlarının dışında",
-        ))?;
+fn set_edge(edges: &mut [Edge], index: usize, side: EdgeSide) {
+    let Some(edge) = edges.get_mut(index) else {
+        crate::invariant_violation("path kenarı graph sınırlarının dışında");
+    };
     match side {
         EdgeSide::Left => edge.left = true,
         EdgeSide::Top => edge.top = true,
     }
-    Ok(())
 }
 
 #[test]
-fn mini_2x2_one_euler() -> Result<(), BitmapConversionError> {
+fn mini_2x2_one_euler() {
     let bm = Bitmap {
         bits: vec![true, false, true, true],
         width: 2,
     };
     assert_eq!(
-        bits_to_edge_graph(&bm.bits, 2, 2)?,
+        bits_to_edge_graph(&bm.bits, 2, 2),
         Graph {
             edges: vec![
                 Edge {
@@ -599,7 +595,7 @@ fn mini_2x2_one_euler() -> Result<(), BitmapConversionError> {
         }
     );
     assert_eq!(
-        bm.path()?,
+        bm.path(),
         vec![
             PathSegment::Horizontal(1),
             PathSegment::Vertical(1),
@@ -609,17 +605,16 @@ fn mini_2x2_one_euler() -> Result<(), BitmapConversionError> {
             PathSegment::Close,
         ],
     );
-    Ok(())
 }
 
 #[test]
-fn mini_2x3_one_euler() -> Result<(), BitmapConversionError> {
+fn mini_2x3_one_euler() {
     let bm = Bitmap {
         bits: vec![true, false, true, true, true, false],
         width: 3,
     };
     assert_eq!(
-        bm.path()?,
+        bm.path(),
         vec![
             PathSegment::Horizontal(1),
             PathSegment::Vertical(1),
@@ -631,17 +626,16 @@ fn mini_2x3_one_euler() -> Result<(), BitmapConversionError> {
             PathSegment::Close,
         ],
     );
-    Ok(())
 }
 
 #[test]
-fn mini_3x2_two_euler() -> Result<(), BitmapConversionError> {
+fn mini_3x2_two_euler() {
     let bm = Bitmap {
         bits: vec![true, true, false, false, false, true],
         width: 2,
     };
     assert_eq!(
-        bm.path()?,
+        bm.path(),
         vec![
             PathSegment::Horizontal(2),
             PathSegment::Vertical(1),
@@ -654,13 +648,12 @@ fn mini_3x2_two_euler() -> Result<(), BitmapConversionError> {
             PathSegment::Close,
         ],
     );
-    Ok(())
 }
 
 #[test]
 fn empty() -> Result<(), BitmapConversionError> {
     let bm = Bitmap::new(vec![false; 6], 2)?;
-    assert_eq!(bm.path()?, vec![]);
+    assert_eq!(bm.path(), vec![]);
     Ok(())
 }
 
@@ -670,7 +663,7 @@ fn edge_hint() -> Result<(), BitmapConversionError> {
         bits: vec![false, false, true, true, true, true],
         width: 3,
     };
-    let graph = bits_to_edge_graph(&bm.bits, bm.width(), bm.height())?;
+    let graph = bits_to_edge_graph(&bm.bits, bm.width(), bm.height());
     assert_eq!(graph.edge_hint.get(), 2);
     Ok(())
 }

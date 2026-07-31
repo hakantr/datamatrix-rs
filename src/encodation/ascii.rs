@@ -20,18 +20,20 @@ pub(super) fn two_digits_coming(rest: &[u8]) -> bool {
 
 pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncodingError> {
     loop {
-        // If two digits are next, encode without asking for mode switch
-        if ctx.maybe_switch_mode()? {
+        // Sıradaki iki karakter rakamsa mode switch istemeden encode eder.
+        if ctx.maybe_switch_mode() {
             return Ok(());
         }
         let two_digits = two_digits_coming(ctx.rest());
         if two_digits {
-            let a = ctx.eat().ok_or(DataEncodingError::InternalError(
-                "ASCII planı iki basamak beklerken input sona erdi",
-            ))?;
-            let b = ctx.eat().ok_or(DataEncodingError::InternalError(
-                "ASCII planındaki ikinci basamak input içinde bulunamadı",
-            ))?;
+            let Some(a) = ctx.eat() else {
+                crate::invariant_violation("ASCII planı iki basamak beklerken input sona erdi");
+            };
+            let Some(b) = ctx.eat() else {
+                crate::invariant_violation(
+                    "ASCII planındaki ikinci basamak input içinde bulunamadı",
+                );
+            };
             ctx.push((a - b'0') * 10 + (b - b'0') + 130);
             continue;
         }
@@ -46,7 +48,7 @@ pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncoding
     }
 }
 
-/// Compute the number of bytes needed to encode `rest` in Ascii mode
+/// `rest` verisini Ascii mode ile encode etmek için gereken byte sayısını hesaplar.
 pub(super) fn encoding_size(mut rest: &[u8]) -> usize {
     let mut count = 0;
     loop {

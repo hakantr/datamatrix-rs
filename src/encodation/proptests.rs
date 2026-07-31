@@ -1,19 +1,18 @@
-//! Property tests that pin the invariants between the planner and the encoder.
+//! Planner ile encoder arasındaki değişmezleri sabitleyen property test'leri.
 //!
-//! The planner (`planner::optimize`) and the real encoders are two parallel
-//! implementations of the same per-mode logic: the planner predicts a cost in
-//! codewords, the encoder emits the bytes. These tests guard the seams between
-//! them:
+//! Planner (`planner::optimize`) ve gerçek encoder'lar, mode başına aynı mantığın
+//! iki paralel implementasyonudur: planner codeword cinsinden cost tahmin eder,
+//! encoder ise byte'ları üretir. Bu testler aralarındaki sınırları korur:
 //!
-//! 1. `planner_cost_matches_encoder_length` — the planner's predicted cost
-//!    equals the number of codewords the encoder actually emits (before
-//!    padding). This is the core consistency invariant; a mismatch means the
-//!    duplicated end-of-data logic has drifted out of lockstep.
-//! 2. `more_modes_never_increase_size` — enabling more encodation modes can
-//!    only keep the symbol the same size or shrink it. A cheap optimality
-//!    guard that needs no internals.
-//! 3. `round_trip` — encode followed by decode returns the input (the property
-//!    the AFL fuzz target also checks).
+//! 1. `planner_cost_matches_encoder_length` — planner'ın tahmini cost'u,
+//!    encoder'ın padding öncesinde gerçekten ürettiği codeword sayısına eşittir.
+//!    Bu temel tutarlılık değişmezidir; fark olması yinelenen end-of-data
+//!    mantığının eşzamanlılığını kaybettiğini gösterir.
+//! 2. `more_modes_never_increase_size` — daha fazla encodation mode etkinleştirmek
+//!    symbol'ü yalnızca aynı boyutta tutabilir veya küçültebilir. İç ayrıntılara
+//!    ihtiyaç duymayan düşük maliyetli bir optimality denetimidir.
+//! 3. `round_trip` — encode ardından decode işlemi input'u geri döndürür. AFL fuzz
+//!    hedefi de bu özelliği denetler.
 
 use alloc::vec::Vec;
 
@@ -25,7 +24,7 @@ use crate::data::{decode_data, encode_data, encode_data_unpadded_len};
 use crate::encodation::planner::optimize_cost;
 use crate::symbol_size::{SymbolList, SymbolSize};
 
-/// All encodation modes, in declaration order so bit `i` maps to `MODES[i]`.
+/// Bit `i`, `MODES[i]` ile eşleşecek biçimde bildirim sırasındaki bütün encodation mode'ları.
 const MODES: [EncodationType; 6] = [
     EncodationType::Ascii,
     EncodationType::C40,
@@ -35,8 +34,8 @@ const MODES: [EncodationType; 6] = [
     EncodationType::Base256,
 ];
 
-/// Build an enabled-mode set from a bit mask. ASCII is always included since
-/// every other scheme is invoked from ASCII (ISO/IEC 16022, clause 5.2.3).
+/// Bit mask'tan etkin mode kümesi oluşturur. Diğer bütün scheme'ler ASCII'den
+/// başlatıldığı için ASCII her zaman eklenir (ISO/IEC 16022, madde 5.2.3).
 fn modes_from_mask(mask: u8) -> FlagSet<EncodationType> {
     let mut set = FlagSet::from(EncodationType::Ascii);
     for (i, mode) in MODES.iter().enumerate().skip(1) {
@@ -47,20 +46,20 @@ fn modes_from_mask(mask: u8) -> FlagSet<EncodationType> {
     set
 }
 
-/// A mix of arbitrary and structured inputs that exercise the mode switches and
-/// the end-of-data edge cases of each scheme.
+/// Mode switch'leri ve her scheme'in end-of-data sınır durumlarını çalıştıran
+/// rastgele ve yapılandırılmış input karışımı.
 fn data_strategy() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
-        proptest::collection::vec(any::<u8>(), 0..64), // arbitrary bytes
-        proptest::collection::vec(0x20u8..0x7f, 0..96), // printable ASCII
-        proptest::collection::vec(0x30u8..0x3a, 0..96), // digits (ASCII/C40/X12 edges)
+        proptest::collection::vec(any::<u8>(), 0..64), // Rastgele byte'lar
+        proptest::collection::vec(0x20u8..0x7f, 0..96), // Yazdırılabilir ASCII
+        proptest::collection::vec(0x30u8..0x3a, 0..96), // Rakamlar (ASCII/C40/X12 sınırları)
         proptest::collection::vec(0x41u8..0x5b, 0..96), // A-Z (C40/X12 native)
         proptest::collection::vec(0x20u8..0x5f, 0..96), // EDIFACT range
     ]
 }
 
-/// Symbol lists with different shapes, including single fixed sizes whose tight
-/// capacity means padding cannot mask a one-codeword divergence.
+/// Kısıtlı kapasitesi nedeniyle padding'in tek codeword farkını gizleyemediği
+/// sabit boyutlar dahil, farklı şekillere sahip symbol listeleri.
 fn symbols_strategy() -> impl Strategy<Value = SymbolList> {
     prop_oneof![
         Just(SymbolList::default()),
@@ -79,13 +78,13 @@ fn symbols_strategy() -> impl Strategy<Value = SymbolList> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1024))]
 
-    /// Whenever the encoder succeeds, the planner must predict exactly the
-    /// number of codewords it emits (before padding).
+    /// Encoder başarılı olduğunda planner, padding öncesinde üretilen codeword
+    /// sayısını tam olarak tahmin etmelidir.
     ///
-    /// The reverse is not asserted: the planner can report a cost for a plan
-    /// that does not fit the symbol list (ASCII planning is not bounded by
-    /// symbol capacity), while the encoder correctly rejects it. The encoder
-    /// is authoritative, so we only compare on the inputs it accepts.
+    /// Tersi doğrulanmaz: ASCII planning symbol kapasitesiyle sınırlı olmadığından
+    /// planner symbol listesine sığmayan bir plan için cost bildirebilir; encoder
+    /// ise bunu doğru biçimde reddeder. Yetkili sonuç encoder olduğundan yalnızca
+    /// kabul ettiği input'lar karşılaştırılır.
     #[test]
     fn planner_cost_matches_encoder_length(
         data in data_strategy(),
@@ -97,14 +96,14 @@ proptest! {
             let predicted = optimize_cost(&data, 0, EncodationType::Ascii, &symbols, modes);
             prop_assert_eq!(
                 predicted, Some(actual),
-                "planner predicted {:?} codewords but encoder produced {}; data={:?} modes={:?}",
+                "planner {:?} codeword tahmin etti ancak encoder {} üretti; data={:?} mode'lar={:?}",
                 predicted, actual, data, modes,
             );
         }
     }
 
-    /// Enabling more modes gives the planner strictly more options, so the
-    /// chosen symbol can never grow.
+    /// Daha fazla mode etkinleştirmek planner'a daha çok seçenek verdiğinden seçilen
+    /// symbol hiçbir zaman büyüyemez.
     #[test]
     fn more_modes_never_increase_size(data in data_strategy(), mask in any::<u8>()) {
         let symbols = SymbolList::default();
@@ -118,13 +117,13 @@ proptest! {
         if let (Some(all), Some(subset)) = (all, subset) {
             prop_assert!(
                 all <= subset,
-                "all modes gave {} codewords, subset {:?} gave {}; data={:?}",
+                "bütün mode'lar {} codeword, {:?} alt kümesi {} codeword üretti; data={:?}",
                 all, modes_from_mask(mask), subset, data,
             );
         }
     }
 
-    /// Encoding and then decoding returns the original input.
+    /// Encoding ardından decoding özgün input'u geri döndürür.
     #[test]
     fn round_trip(data in data_strategy(), mask in any::<u8>()) {
         let modes = modes_from_mask(mask);

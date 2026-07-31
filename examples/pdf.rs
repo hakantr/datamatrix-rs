@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "So long as men can breathe, or eyes can see,\n",
         "So long lives this, and this gives life to thee.",
     );
-    let bitmap = DataMatrix::encode(s.as_bytes(), SymbolList::default())?.bitmap()?;
+    let bitmap = DataMatrix::encode(s.as_bytes(), SymbolList::default())?.bitmap();
 
     // Tek bir siyah karenin PDF point (1/72 inç) cinsinden boyutu. Burada bir
     // module 1 mm genişliğindedir; değer bitmap boyutlarından ve kullanılabilir
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pb = PathBuilder::new();
     // İlk subpath örtük başlar; path() başlangıçta Move üretmez.
     pb.move_to(x, y);
-    for segment in bitmap.path()? {
+    for segment in bitmap.path() {
         match segment {
             PathSegment::Move(dx, dy) => {
                 x += SIZE * (dx as f32);

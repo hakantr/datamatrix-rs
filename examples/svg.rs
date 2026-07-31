@@ -15,7 +15,7 @@ fn bitmap_to_svg(bitmap: Bitmap<bool>) -> Result<String, Box<dyn std::error::Err
 
     // Path segment öğeleri SVG path söz dizimine doğrudan karşılık gelir.
     // Boyutu değiştirmek için bütün değerler sabit bir ölçekle çarpılabilir.
-    for part in bitmap.path()? {
+    for part in bitmap.path() {
         match part {
             PathSegment::Horizontal(n) => write!(svg, "h{}", n),
             PathSegment::Vertical(n) => write!(svg, "v{}", n),
@@ -28,8 +28,8 @@ fn bitmap_to_svg(bitmap: Bitmap<bool>) -> Result<String, Box<dyn std::error::Err
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bitmap = DataMatrix::encode(b"Hello, SVG!", SymbolList::default().enforce_rectangular())?
-        .bitmap()?;
+    let bitmap =
+        DataMatrix::encode(b"Hello, SVG!", SymbolList::default().enforce_rectangular())?.bitmap();
     println!("{}", bitmap_to_svg(bitmap)?);
     Ok(())
 }

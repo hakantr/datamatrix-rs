@@ -1,6 +1,6 @@
-//! Data decodation. This comes after error correction and visual detection.
+//! Data decodation. Bu aşama error correction ve görsel algılamadan sonra gelir.
 //!
-//! It performs the inverse of the `encodation` module.
+//! `encodation` modülünün ters işlemini uygular.
 use super::encodation::{
     EncodationType, MACRO_TRAIL, MACRO05, MACRO05_HEAD, MACRO06, MACRO06_HEAD, UNLATCH, ascii,
     edifact,
@@ -21,13 +21,13 @@ mod eci;
 pub(crate) use eci::ECI_UTF8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Error when decoding the data part.
+/// Data bölümü decode edilirken oluşan hata.
 pub enum DataDecodingError {
     UnexpectedCharacter(&'static str, u8),
     NotImplemented(&'static str),
     UnexpectedEnd,
     CharsetError,
-    /// An ECI code is not supported in raw data decoding
+    /// Ham data decoding sırasında ECI code desteklenmez.
     ECICode,
 }
 
@@ -80,7 +80,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Decode the data codewords of a Data Matrix.
+/// Data Matrix'in data codeword'lerini decode eder.
 pub fn decode_data(data: &[u8]) -> Result<Vec<u8>, DataDecodingError> {
     let parts = decode_parts(data, true)?;
     if !parts.eci_spans.is_empty() {
@@ -154,10 +154,10 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
     })
 }
 
-/// Decode the data codewords of a Data Matrix as a string.
+/// Data Matrix'in data codeword'lerini string olarak decode eder.
 ///
-/// This function has some ECI support. Be aware that
-/// latin1 encoding is assumed if no ECI is there.
+/// Bu fonksiyon sınırlı ECI desteğine sahiptir. ECI yoksa Latin-1 encoding
+/// kullanıldığı varsayılır.
 pub fn decode_str(data: &[u8]) -> Result<String, DataDecodingError> {
     let parts = decode_parts(data, false)?;
     eci::convert(&parts.output, &parts.eci_spans)
@@ -180,7 +180,10 @@ fn read_eci(mut data: Reader) -> Result<(Reader, u32), DataDecodingError> {
         128..=191 => {
             let mut ch2 = data.eat()?;
             if !matches!(ch2, 1..=254) {
-                return Err(DataDecodingError::UnexpectedCharacter("2nd after ECI", ch2));
+                return Err(DataDecodingError::UnexpectedCharacter(
+                    "ECI sonrasındaki ikinci codeword",
+                    ch2,
+                ));
             }
             ch2 -= 1;
             ch1 -= 128;
@@ -189,18 +192,29 @@ fn read_eci(mut data: Reader) -> Result<(Reader, u32), DataDecodingError> {
         192..=207 => {
             let mut ch2 = data.eat()?;
             if !matches!(ch2, 1..=254) {
-                return Err(DataDecodingError::UnexpectedCharacter("2nd after ECI", ch2));
+                return Err(DataDecodingError::UnexpectedCharacter(
+                    "ECI sonrasındaki ikinci codeword",
+                    ch2,
+                ));
             }
             let mut ch3 = data.eat()?;
             if !matches!(ch3, 1..=254) {
-                return Err(DataDecodingError::UnexpectedCharacter("3rd after ECI", ch3));
+                return Err(DataDecodingError::UnexpectedCharacter(
+                    "ECI sonrasındaki üçüncü codeword",
+                    ch3,
+                ));
             }
             ch1 -= 192;
             ch2 -= 1;
             ch3 -= 1;
             (ch1 as u32) * 64516 + (ch2 as u32) * 254 + ch3 as u32 + 16383
         }
-        _ => return Err(DataDecodingError::UnexpectedCharacter("1st after ECI", ch1)),
+        _ => {
+            return Err(DataDecodingError::UnexpectedCharacter(
+                "ECI sonrasındaki ilk codeword",
+                ch1,
+            ));
+        }
     };
     Ok((data, eci))
 }
@@ -214,7 +228,7 @@ fn decode_ascii<'a>(
     while let Ok(ch) = data.eat() {
         if upper_shift && !matches!(ch, 1..=128) {
             return Err(DataDecodingError::UnexpectedCharacter(
-                "character after ascii 'Upper Shift' was not in 1 to 128",
+                "ASCII 'Upper Shift' sonrasındaki karakter 1..=128 aralığında değil",
                 ch,
             ));
         }
@@ -228,12 +242,12 @@ fn decode_ascii<'a>(
                 }
             }
             ascii::PAD => {
-                // eat rest, check padding format
+                // Kalan veriyi tüketir ve padding biçimini denetler.
                 while let Ok(ch) = data.eat() {
                     let ch = derandomize_253_state(ch, data.pos() - 1);
                     if ch != ascii::PAD {
                         return Err(DataDecodingError::UnexpectedCharacter(
-                            "non-padding char in padding area",
+                            "padding alanında padding olmayan karakter",
                             ch,
                         ));
                     }
@@ -265,7 +279,7 @@ fn decode_ascii<'a>(
             }
             ch => {
                 return Err(DataDecodingError::UnexpectedCharacter(
-                    "illegal in ascii",
+                    "ASCII içinde geçersiz",
                     ch,
                 ));
             }
@@ -329,7 +343,7 @@ fn decode_edifact<'a>(
 ) -> Result<(Reader<'a>, EncodationType), DataDecodingError> {
     while !data.is_empty() {
         if data.len() <= 2 {
-            // rest is encoded as ASCII
+            // Kalan veri ASCII olarak encode edilmiştir.
             break;
         }
         if data.peek(0).is_some_and(|ch| ch >> 2 == edifact::UNLATCH) {
@@ -387,7 +401,10 @@ fn dec_x12_val(ch: u8) -> Result<u8, DataDecodingError> {
         3 => Ok(b' '),
         ch @ 4..=13 => Ok(b'0' + (ch - 4)),
         ch @ 14..=39 => Ok(b'A' + (ch - 14)),
-        ch => Err(DataDecodingError::UnexpectedCharacter("not x12", ch)),
+        ch => Err(DataDecodingError::UnexpectedCharacter(
+            "X12 içinde geçersiz",
+            ch,
+        )),
     }
 }
 
@@ -408,7 +425,7 @@ fn decode_x12<'a>(
         out.push(dec_x12_val(c3)?);
     }
     if data.len() == 1 && data.peek(0) == Some(UNLATCH) {
-        // single UNLATCH at end of data
+        // End of data noktasında tek UNLATCH
         data.eat()?;
     }
     Ok((data, EncodationType::Ascii))
@@ -442,7 +459,10 @@ fn decode_c40_like<'a>(
                     ch @ 0..=2 => shift = ch + 1,
                     ch @ 3..=39 => {
                         let text = map_base.get(usize::from(ch - 3)).copied().ok_or(
-                            DataDecodingError::UnexpectedCharacter("not in base c40/text", ch),
+                            DataDecodingError::UnexpectedCharacter(
+                                "C40/Text base set içinde geçersiz",
+                                ch,
+                            ),
                         )?;
                         if upper_shift {
                             out.push(text + 128);
@@ -453,7 +473,7 @@ fn decode_c40_like<'a>(
                     }
                     ch => {
                         return Err(DataDecodingError::UnexpectedCharacter(
-                            "not in base c40/text",
+                            "C40/Text base set içinde geçersiz",
                             ch,
                         ));
                     }
@@ -470,7 +490,7 @@ fn decode_c40_like<'a>(
                     }
                     ch => {
                         return Err(DataDecodingError::UnexpectedCharacter(
-                            "not in shift1 c40/text",
+                            "C40/Text shift1 set içinde geçersiz",
                             ch,
                         ));
                     }
@@ -480,7 +500,10 @@ fn decode_c40_like<'a>(
                 match ch {
                     ch @ 0..=26 => {
                         let text = SHIFT2.get(usize::from(ch)).copied().ok_or(
-                            DataDecodingError::UnexpectedCharacter("not in shift2 c40/text", ch),
+                            DataDecodingError::UnexpectedCharacter(
+                                "C40/Text shift2 set içinde geçersiz",
+                                ch,
+                            ),
                         )?;
                         if upper_shift {
                             out.push(text + 128);
@@ -489,11 +512,11 @@ fn decode_c40_like<'a>(
                             out.push(text);
                         }
                     }
-                    27 => return Err(DataDecodingError::NotImplemented("FNC1 in C40/Text")),
+                    27 => return Err(DataDecodingError::NotImplemented("C40/Text içinde FNC1")),
                     30 => upper_shift = true,
                     _ => {
                         return Err(DataDecodingError::UnexpectedCharacter(
-                            "not in shift2 c40/text",
+                            "C40/Text shift2 set içinde geçersiz",
                             ch,
                         ));
                     }
@@ -503,7 +526,10 @@ fn decode_c40_like<'a>(
                 match ch {
                     ch @ 0..=31 => {
                         let text = map_shift3.get(usize::from(ch)).copied().ok_or(
-                            DataDecodingError::UnexpectedCharacter("not in shift3 c40/text", ch),
+                            DataDecodingError::UnexpectedCharacter(
+                                "C40/Text shift3 set içinde geçersiz",
+                                ch,
+                            ),
                         )?;
                         if upper_shift {
                             out.push(text + 128);
@@ -514,7 +540,7 @@ fn decode_c40_like<'a>(
                     }
                     _ => {
                         return Err(DataDecodingError::UnexpectedCharacter(
-                            "not in shift3 c40/text",
+                            "C40/Text shift3 set içinde geçersiz",
                             ch,
                         ));
                     }
@@ -524,7 +550,7 @@ fn decode_c40_like<'a>(
         }
     }
     if data.len() == 1 && data.peek(0) == Some(UNLATCH) {
-        // single UNLATCH at end of data
+        // End of data noktasında tek UNLATCH
         data.eat()?;
     }
     Ok((data, EncodationType::Ascii))
@@ -598,7 +624,7 @@ fn test_read_eci() -> Result<(), &'static str> {
         assert_eq!(
             read_eci(Reader(&[192, 1, invalid], 0)),
             Err(DataDecodingError::UnexpectedCharacter(
-                "3rd after ECI",
+                "ECI sonrasındaki üçüncü codeword",
                 invalid
             ))
         );
@@ -611,14 +637,14 @@ fn test_strict_eot_c40_unlatch() {
     assert_eq!(
         decode_data(&[ascii::LATCH_TEXT, UNLATCH, UNLATCH, 50]),
         Err(DataDecodingError::UnexpectedCharacter(
-            "illegal in ascii",
+            "ASCII içinde geçersiz",
             UNLATCH
         )),
     );
     assert_eq!(
         decode_data(&[ascii::LATCH_X12, UNLATCH, UNLATCH, 50]),
         Err(DataDecodingError::UnexpectedCharacter(
-            "illegal in ascii",
+            "ASCII içinde geçersiz",
             UNLATCH
         )),
     );

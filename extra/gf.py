@@ -1,21 +1,19 @@
-"""
-Implementation of some GF(256) arithmetic used in Data Matrix.
-"""
+"""Data Matrix içinde kullanılan bazı GF(256) aritmetik işlemleri."""
 import random
 
-# This is the polynomical used by Data Matrix do define multiplication.
-# QR codes use a different polynomial for example.
+# Bu, Data Matrix'in çarpmayı tanımlamak için kullandığı polynomial'dır.
+# Örneğin QR code'lar farklı bir polynomial kullanır.
 IRREDUCIBLE_P = 0b1_0010_1101
 
 class GF:
-    """Representation of an element from GF(256)."""
+    """GF(256) içindeki bir öğenin gösterimi."""
 
     def __init__(self, v):
         if isinstance(v, GF):
             self.v = v.v
         else:
             self.v = int(v)
-        assert 0 <= int(self.v) < 256
+        assert 0 <= int(self.v) < 256, "GF(256) öğesi 0..=255 aralığında olmalı"
 
     def __add__(self, o):
         o = GF(o).v
@@ -63,7 +61,7 @@ class GF:
         return GF(ANTI_LOG[(ia + ib) % 255])
 
     def __truediv__(self, b):
-        assert b != 0
+        assert b != 0, "GF(256) içinde sıfıra bölme tanımsızdır"
         if self == 0:
             return GF(0)
         ia = LOG[self.v]
@@ -78,10 +76,10 @@ class GF:
 
 
 class Poly:
-    """Polynomial over GF(256)."""
+    """GF(256) üzerinde polynomial."""
 
     def __init__(self, coeffs):
-        """Create polynomial from coefficients (order: low to high power)."""
+        """Katsayılardan polynomial oluşturur; sıra düşük kuvvetten yükseğe doğrudur."""
         if isinstance(coeffs, Poly):
             self.coeffs = coeffs.coeffs[:]
         else:
@@ -90,7 +88,7 @@ class Poly:
             self.coeffs.pop()
 
     def __mul__(self, o):
-        """Multiply two polynomicals"""
+        """İki polynomial'ı çarpar."""
         other = Poly(o).coeffs
         highest_power = len(self.coeffs) - 1 + len(other) - 1
         res = [0 for _ in range(highest_power + 1)]
@@ -160,12 +158,12 @@ class Poly:
         return " + ".join(p)
 
 
-assert GF(0x53) + GF(0xCA) == GF(0x99)
+assert GF(0x53) + GF(0xCA) == GF(0x99), "GF(256) toplama denetimi başarısız"
 
 ANTI_LOG = [None] * 256
 LOG = [None] * 256
 
-# Populate the tables
+# Table'ları doldurur.
 p = GF(1)
 for i in range(0, 256):
     ANTI_LOG[i] = p
@@ -176,18 +174,19 @@ for i in range(0, 256):
 # GF(5), GF(2)
 # rhs: GF(56), GF(23)
 x = [GF(183), GF(246)]
-print("row1", GF(2) * x[0] + GF(1) * x[1])
-print("row2", GF(5) * x[0] + GF(2) * x[1])
+print("satır1", GF(2) * x[0] + GF(1) * x[1])
+print("satır2", GF(5) * x[0] + GF(2) * x[1])
 
-print("tmp", GF(2) * GF(2))
+print("geçici değer", GF(2) * GF(2))
 
 # print(ANTI_LOG)
 
 def gen(n):
     """
-    Compute the n-th generator polynomial.
+    n'inci generator polynomial değerini hesaplar.
 
-    That is, compute (x + 2 ** 1) * (x + 2 ** 2) * ... * (x + 2 ** n).
+    Başka bir deyişle (x + 2 ** 1) * (x + 2 ** 2) * ... * (x + 2 ** n)
+    ifadesini hesaplar.
     """
     p = Poly([GF(1)])
     two = GF(1)
@@ -201,7 +200,7 @@ x_k = Poly([GF(i == 5) for i in range(6)])
 p = data * x_k
 g = gen(5)
 q, r = p.euclid_div(g)
-assert p == q * g + r
+assert p == q * g + r, "Euclidean polynomial division denetimi başarısız"
 print("data:", data)
 print("error_code:", r)
 
@@ -211,19 +210,19 @@ print(p(2))
 print(p(GF(2) ** 2))
 print(p(GF(2) ** 3))
 
-assert GF(2) ** 3 == GF(2) * GF(2) * GF(2)
+assert GF(2) ** 3 == GF(2) * GF(2) * GF(2), "GF(256) kuvvet denetimi başarısız"
 
 
-# This will print the generating polynomials
+# Generator polynomial değerlerini yazdırır.
 gens = [5, 7, 10, 11, 12, 14, 15, 18, 20, 22, 24, 27, 28, 32, 34, 36, 38, 41, 42, 46, 48, 50, 56, 62, 68]
-print("Generating polynomials:")
+print("Generator polynomial değerleri üretiliyor:")
 for g in gens:
     cs = reversed(gen(g).coeffs)
     print(f"// {g}")
     print("&[" + ", ".join(str(c.v) for c in cs) + "],")
 
 
-print("Vandermonde")
+print("Vandermonde matrix'i")
 x = [GF(random.randint(1, 255)) for _ in range(5)]
 print("x = " + ", ".join(f"GF({v.v})" for v in x))
 row = [GF(1)] * len(x)
@@ -232,19 +231,19 @@ for _ in range(len(x)):
         row[i] *= x[i]
     print(", ".join(f"GF({v.v})" for v in row) + ",")
 
-print("Syndromes")
+print("Syndrome değerleri")
 # x = [GF(random.randint(1, 255)) for _ in range(5)]
 x = [GF(128), GF(52), GF(33), GF(83), GF(33)]
 # print("p(1)", sum(x, GF(0)))
 print("x = " + ", ".join(f"GF({v.v})" for v in x))
 r = Poly(x[::-1])
-assert GF(2) ** 1 == GF(2)
-assert GF(2) ** 2 == GF(2) * GF(2)
+assert GF(2) ** 1 == GF(2), "GF(256) birinci kuvvet denetimi başarısız"
+assert GF(2) ** 2 == GF(2) * GF(2), "GF(256) ikinci kuvvet denetimi başarısız"
 for i in range(1, 6):
     print(f"S_{i} = ", r(GF(2) ** i))
 
 
-print("Find zeros")
+print("Polynomial sıfırları aranıyor")
 # x = [GF(random.randint(1, 255)) for _ in range(6)]
 x = [GF(135), GF(239), GF(132), GF(21), GF(58), GF(77)]
 print("x = " + ", ".join(f"GF({v.v})" for v in x))
@@ -254,7 +253,7 @@ for i in range(0, 256):
         print(i)
 
 
-print("Test")
+print("Deneme")
 lam = Poly([GF(128), GF(129), GF(1)][::-1])
 # syn = Poly([GF(93), GF(211), GF(98), GF(95), GF(254)])
 # print(lam * syn)
@@ -266,7 +265,7 @@ print(lam.der())
 print("lambda'(1) = ", lam.der()(GF(1)))
 print("lambda'(119) = ", lam.der()(GF(119)))
 
-print("\nSyndromes")
+print("\nSyndrome değerleri")
 d = Poly([GF(x) for x in [49, 95, 49, 44, 49, 49, 0, 0, 0, 32, 255, 247, 255, 254, 189, 189,
     189, 189, 189, 189, 189, 189, 14, 224, 29, 202, 172, 183, 132, 132, 192,
     213, 159, 98, 115, 178, 76, 72, 57, 127][::-1]])

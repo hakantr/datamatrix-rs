@@ -12,15 +12,15 @@ use alloc::vec::Vec;
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Find an optimal encodation plan.
+/// En uygun encodation planını bulur.
 ///
-/// # Arguments
+/// # Argümanlar
 ///
-/// - The current rest of the input characters are given in `data`.
-/// - In `written` the number of codewords (length of encoding) generated so far is given.
-/// - `mode` is the currently active encodation mode.
-/// - `symbol_list` is the set of symbol sizes the result may use.
-/// - `enabled_modes` restricts which encodation modes the plan may switch to.
+/// - Input karakterlerinin kalan kısmı `data` içinde verilir.
+/// - `written`, şimdiye kadar üretilen codeword sayısını (encoding uzunluğunu) belirtir.
+/// - `mode`, geçerli encodation mode'udur.
+/// - `symbol_list`, sonucun kullanabileceği symbol size kümesidir.
+/// - `enabled_modes`, planın geçebileceği encodation mode'larını sınırlar.
 pub(crate) fn optimize(
     data: &[u8],
     written: usize,
@@ -31,7 +31,7 @@ pub(crate) fn optimize(
     let mut plan = optimize_plan(data, written, mode, symbol_list, enabled_modes)?;
     plan.switches.push((0, plan.current()));
 
-    // Remove a "switch" to ASCII if we are at the very beginning
+    // Henüz başlangıçtaysak ASCII'ye "switch" kaydını kaldırır.
     if written == 0 && plan.switches.first().copied() == Some((data.len(), EncodationType::Ascii)) {
         plan.switches.remove(0);
     }
@@ -39,11 +39,11 @@ pub(crate) fn optimize(
     Some(plan.switches)
 }
 
-/// Number of data codewords the optimal plan would use.
+/// En uygun planın kullanacağı data codeword sayısı.
 ///
-/// This is the cost the [`optimize`] plan is built to minimise. The actual
-/// encoder is expected to emit exactly this many codewords (before padding);
-/// see the consistency proptests.
+/// [`optimize`] planının en aza indirdiği cost budur. Gerçek encoder'ın padding
+/// öncesinde tam olarak bu sayıda codeword üretmesi beklenir; tutarlılık için
+/// proptest'lere bakın.
 #[cfg(test)]
 pub(crate) fn optimize_cost(
     data: &[u8],
@@ -56,8 +56,8 @@ pub(crate) fn optimize_cost(
         .map(|plan| plan.cost().ceil_codewords())
 }
 
-/// Run the shortest-path search and return the winning plan (before its
-/// `switches` are finalised for the encoder).
+/// Shortest-path aramasını çalıştırır ve `switches` encoder için kesinleşmeden
+/// önce kazanan planı döndürür.
 fn optimize_plan<'a>(
     data: &'a [u8],
     written: usize,
@@ -88,19 +88,19 @@ fn optimize_plan<'a>(
             } else {
                 plan_copy_before_step.add_switches(
                     &mut new_plan,
-                    rest_chars, // chars left
+                    rest_chars, // Kalan karakterler
                     use_as_start,
                     enabled_modes,
                 );
-                // remove plan, it can not process input
+                // Input'u işleyemeyen planı kaldırır.
                 continue;
             };
             new_plan.push(plan);
 
-            // we then add mode switches to all other modes, unless
-            // the step was optimal (unbeatable) or we are at the end.
+            // Adım en uygun (iyileştirilemez) değilse ve sonda değilsek diğer
+            // bütün mode'lara mode switch ekleriz.
             if !result.unbeatable && !result.end {
-                // this also calls step() one time.
+                // Bu işlem step() yöntemini de bir kez çağırır.
                 plan_copy_before_step.add_switches(
                     &mut new_plan,
                     rest_chars,
@@ -109,8 +109,8 @@ fn optimize_plan<'a>(
                 );
             }
             if result.end {
-                // since all modes step one character at a time,
-                // we can set this for all modes
+                // Bütün mode'lar bir seferde tek karakter ilerlediğinden bu değer
+                // hepsi için ayarlanabilir.
                 at_end = true;
             }
             if result.end != at_end {
@@ -125,9 +125,9 @@ fn optimize_plan<'a>(
         }
 
         if at_end {
-            // all plans are at the end of data, pick the best one
+            // Bütün planlar end of data noktasındadır; en iyisini seçer.
             let plan = new_plan.into_iter().min_by_key(|p| {
-                // To decide a tie we use the ordering given by ".index()"
+                // Eşitliği çözmek için ".index()" sıralamasını kullanırız.
                 let max_enc = p
                     .switches
                     .iter()
@@ -143,11 +143,11 @@ fn optimize_plan<'a>(
     None
 }
 
-// Only keep one minimizer for every start mode.
+// Her başlangıç mode'u için yalnızca bir minimizer tutar.
 fn remove_hopeless_cases(list: &mut Vec<GenericPlan>) {
     list.sort_unstable_by_key(Plan::cost);
 
-    // only keep min among all plans with tuple (start mode, current mode)
+    // (başlangıç mode'u, geçerli mode) çiftine sahip planlar arasında yalnızca minimumu tutar.
     let mut seen = [false; 6 * 6];
     let mut unique = Vec::with_capacity(list.len());
     for pl in list.drain(..) {
@@ -166,9 +166,9 @@ fn remove_hopeless_cases(list: &mut Vec<GenericPlan>) {
         let Some(first) = list.get(start).cloned() else {
             break;
         };
-        // Let's say `first` has current mode A.
-        // If the cost of `first` switching to mode B is lower or equal
-        // to another plan with current mode B, then we can remove the other plan.
+        // `first` planının geçerli mode'unun A olduğunu varsayalım. `first` planının
+        // B mode'una geçiş cost'u, geçerli mode'u B olan başka bir plandan küçük
+        // veya ona eşitse diğer plan kaldırılabilir.
         let mut uncomparable = false;
         let mut index = start + 1;
         while index < list.len() {
@@ -231,7 +231,7 @@ fn test_hopeless_remove_2() {
     a.step();
     a.step();
     let mut c = GenericPlan::for_mode(EncodationType::C40, b"ABCDEFGH", 0, &symbols);
-    c.step(); // not a boundary, will not compare, so kept
+    c.step(); // Boundary değildir; karşılaştırılmadığı için tutulur.
     let mut list = vec![a.clone(), c.clone()];
     remove_hopeless_cases(&mut list);
     assert_eq!(list, vec![c, a]);
@@ -254,7 +254,7 @@ fn test_ascii_case1() {
 
 #[test]
 fn test_x12_case1() {
-    // from b"ABC>ABC123>ABCDE", which should switches to X12 until end
+    // Sona kadar X12'ye geçmesi gereken b"ABC>ABC123>ABCDE" verisinden alınmıştır.
     let result = optimize(
         b"BCDE",
         0,
@@ -285,8 +285,8 @@ fn test_x12_case2() {
 
 #[test]
 fn test_x12_case3() {
-    // X12 Size: Latch + 3 * 2 + ascii(00) = 8
-    // EDIFACT Size: Latch + 2 * 3 + UNLATCH + ascii(00) = 9
+    // X12 boyutu: Latch + 3 * 2 + ascii(00) = 8
+    // EDIFACT boyutu: Latch + 2 * 3 + UNLATCH + ascii(00) = 9
     let result = optimize(
         b"*********00",
         0,
@@ -317,7 +317,7 @@ fn test_edifact_case1() {
 
 #[test]
 fn test_edifact_case2() {
-    // Next char is not encodable for edifact
+    // Sıradaki karakter EDIFACT ile encode edilemez.
     let result = optimize(
         &[140, 77, 37, 91, 75, 91, 89, 91],
         971,

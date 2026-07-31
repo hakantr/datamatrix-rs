@@ -1,5 +1,5 @@
-//! Implementation of the Peterson-Gorenstein-Zierler algorithm
-//! for decoding Reed-Solomon codes.
+//! Reed–Solomon code'larını decode etmek için Peterson–Gorenstein–Zierler
+//! algoritmasının implementasyonu.
 
 use super::ErrorDecodingError;
 use crate::SymbolSize;
@@ -12,33 +12,28 @@ use alloc::{vec, vec::Vec};
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-/// Decode the Reed-Solomon code using a syndrome based decoder.
+/// Reed–Solomon code'u syndrome tabanlı decoder ile decode eder.
 ///
-/// See the [module documentation](crate::errorcode) for some implementation details.
+/// Implementasyon ayrıntıları için [modül dokümantasyonuna](crate::errorcode) bakın.
 ///
-/// # Params
+/// # Parametreler
 ///
-/// The symbol `codewords` and the `size` of the symbol. The errors are corrected
-/// in-place.
+/// Symbol'ün `codewords` değerleri ve `size` değeri. Hatalar yerinde düzeltilir.
 ///
-/// For larger symbols the error codes are interleaved in a certain way
-/// (see specification), this is considered in this decoder.
+/// Büyük symbol'lerde error code'lar belirli bir biçimde interleaved edilir.
+/// Decoder bu düzeni dikkate alır; ayrıntılar için specification'a bakın.
 pub fn decode(codewords: &mut [u8], size: SymbolSize) -> Result<(), ErrorDecodingError> {
     let setup = size.block_setup();
     let err_len = setup.num_ecc_per_block;
     let stride = setup.num_ecc_blocks;
     let num_data = size.num_data_codewords();
 
-    let num_error = stride
-        .checked_mul(err_len)
-        .ok_or(ErrorDecodingError::InvalidSetup(
-            "error codeword sayısı hesaplanırken taşma oluştu",
-        ))?;
-    let expected = num_data
-        .checked_add(num_error)
-        .ok_or(ErrorDecodingError::InvalidSetup(
-            "toplam codeword sayısı hesaplanırken taşma oluştu",
-        ))?;
+    let Some(num_error) = stride.checked_mul(err_len) else {
+        crate::invariant_violation("error codeword sayısı hesaplanırken taşma oluştu");
+    };
+    let Some(expected) = num_data.checked_add(num_error) else {
+        crate::invariant_violation("toplam codeword sayısı hesaplanırken taşma oluştu");
+    };
     if codewords.len() != expected {
         return Err(ErrorDecodingError::DataSize {
             expected,
@@ -46,9 +41,7 @@ pub fn decode(codewords: &mut [u8], size: SymbolSize) -> Result<(), ErrorDecodin
         });
     }
     if stride == 0 {
-        return Err(ErrorDecodingError::InvalidSetup(
-            "interleaved block sayısı sıfır olamaz",
-        ));
+        crate::invariant_violation("interleaved block sayısı sıfır olamaz");
     }
 
     // Square144 için ilk 8 block 218 codeword (156 data codeword), son iki block
@@ -57,16 +50,12 @@ pub fn decode(codewords: &mut [u8], size: SymbolSize) -> Result<(), ErrorDecodin
     // data ve error bölümleri ayrı ilerletilir.
     let (data, error) = codewords.split_at_mut(num_data);
     for block in 0..setup.num_ecc_blocks {
-        let data_block = data
-            .get_mut(block..)
-            .ok_or(ErrorDecodingError::InvalidSetup(
-                "interleaved data block başlangıcı bulunamadı",
-            ))?;
-        let error_block = error
-            .get_mut(block..)
-            .ok_or(ErrorDecodingError::InvalidSetup(
-                "interleaved error block başlangıcı bulunamadı",
-            ))?;
+        let Some(data_block) = data.get_mut(block..) else {
+            crate::invariant_violation("interleaved data block başlangıcı bulunamadı");
+        };
+        let Some(error_block) = error.get_mut(block..) else {
+            crate::invariant_violation("interleaved error block başlangıcı bulunamadı");
+        };
         decode_gen(
             data_block,
             error_block,
@@ -92,28 +81,21 @@ where
     G: Fn(&mut [GF], &[GF], &mut [GF]) -> Result<(), ErrorDecodingError>,
 {
     if stride == 0 {
-        return Err(ErrorDecodingError::InvalidSetup("stride sıfır olamaz"));
+        crate::invariant_violation("Reed–Solomon stride değeri sıfır olamaz");
     }
     let n_data = data.len().div_ceil(stride);
     let n_error = error.len().div_ceil(stride);
-    let n = n_data
-        .checked_add(n_error)
-        .ok_or(ErrorDecodingError::InvalidSetup(
-            "block codeword sayısı hesaplanırken taşma oluştu",
-        ))?;
+    let Some(n) = n_data.checked_add(n_error) else {
+        crate::invariant_violation("block codeword sayısı hesaplanırken taşma oluştu");
+    };
     if err_len == 0 {
-        return Err(ErrorDecodingError::InvalidSetup(
-            "generator polynomial derecesi en az 1 olmalı",
-        ));
+        crate::invariant_violation("generator polynomial derecesi en az 1 olmalı");
     }
     if n <= err_len {
-        return Err(ErrorDecodingError::InvalidSetup(
-            "data uzunluğu error codeword son ekinden kısa",
-        ));
+        crate::invariant_violation("data uzunluğu error codeword son ekinden kısa");
     }
 
-    // Actually, Wikipedia has a nice description of the (classic) algorithm at
-    // the time of writing this, see
+    // Bu kod yazılırken Wikipedia'da klasik algoritmanın iyi bir açıklaması vardı:
     //
     //    https://en.wikipedia.org/wiki/Reed%E2%80%93Solomon_error_correction#Peterson%E2%80%93Gorenstein%E2%80%93Zierler_decoder
 
@@ -142,7 +124,7 @@ where
         return Err(ErrorDecodingError::Malfunction);
     }
 
-    // 2b. Check for malfunction, cf.
+    // 2b. Malfunction durumunu denetle; bkz.
     // M. Srinivasan and D. V. Sarwate, Malfunction in the Peterson-Gorenstein-Zierler Decoder,
     // IEEE Trans. Inf. Theory.
     let t = err_len / 2;
@@ -247,9 +229,9 @@ fn checked_mul(a: usize, b: usize) -> Result<usize, ErrorDecodingError> {
     a.checked_mul(b).ok_or(ErrorDecodingError::Malfunction)
 }
 
-/// Find the error locations by exploiting that the syndrome matrix is a Hankel matrix.
+/// Syndrome matrix'in Hankel matrix olmasından yararlanarak hata konumlarını bulur.
 ///
-/// See the paper "Levinson-Durbin Algorithm Used For Fast BCH Decoding" by Schmidt and Fettweis.
+/// Schmidt ve Fettweis'in "Levinson-Durbin Algorithm Used For Fast BCH Decoding" makalesine bakın.
 fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError> {
     let t = syn.len() / 2;
     if t == 0 {
@@ -395,7 +377,7 @@ fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, Error
                 let rho = value(syn, rho_index)? - dot(values_inclusive(syn, v, dot_end)?, &tmp)?;
                 let eta_index = v.checked_sub(1).ok_or(ErrorDecodingError::Malfunction)?;
                 let eta = value(&tmp, eta_index)?;
-                // 1. w^k = U * w_k, shift values right
+                // 1. w^k = U * w_k; değerleri sağa kaydır.
                 tmp.pop().ok_or(ErrorDecodingError::Malfunction)?;
                 tmp.insert(0, GF(0));
                 // 2. w^k += rho * y + eta * w_v
@@ -524,9 +506,9 @@ fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, Error
     Ok(w)
 }
 
-/// Find error values by solving the coefficient matrix system with the Björck-Pereyra algorithm.
+/// Katsayı matrix sistemini Björck–Pereyra algoritmasıyla çözerek hata değerlerini bulur.
 ///
-/// This runs in O(t^2).
+/// O(t^2) karmaşıklığında çalışır.
 fn find_error_values_bp(
     x_loc: &mut [GF],
     _lambda: &[GF],
@@ -585,14 +567,14 @@ fn find_error_values_bp(
     Ok(())
 }
 
-/// The Berlekamp-Massey (BM) algorithm for finding error locations.
+/// Hata konumlarını bulmak için Berlekamp–Massey (BM) algoritması.
 #[allow(unused)]
 fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError> {
-    let mut len_lfsr = 0; // current length of the LFSR
-    let mut cur = vec![GF(1)]; // current connection polynomial
-    let mut prev = vec![GF(1)]; // connection polynomial before last length change
-    let mut l = 1; // l is k - m, the amount of shift in update
-    let mut discrepancy_m = GF(1); // previous discrepancy
+    let mut len_lfsr = 0; // LFSR'nin geçerli uzunluğu
+    let mut cur = vec![GF(1)]; // Geçerli connection polynomial
+    let mut prev = vec![GF(1)]; // Son uzunluk değişiminden önceki connection polynomial
+    let mut l = 1; // l = k - m; güncellemedeki shift miktarı
+    let mut discrepancy_m = GF(1); // Önceki discrepancy
     for k in 0..syn.len() {
         // Discrepancy değerini hesapla.
         let cur_tail = values(&cur, 1, cur.len())?;
@@ -606,7 +588,7 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
         if discrepancy == GF(0) {
             l += 1;
         } else if 2 * len_lfsr > k {
-            // update without length change
+            // Uzunluğu değiştirmeden günceller.
             let tmp = discrepancy / discrepancy_m;
             let cur_len = cur.len();
             for (ci, pj) in values_mut(&mut cur, l, cur_len)?
@@ -617,7 +599,7 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
             }
             l += 1;
         } else {
-            // update cur with length change
+            // cur değerini uzunluk değişimiyle günceller.
             let cur_clone_before = cur.clone();
             let tmp = discrepancy / discrepancy_m;
             cur.resize(checked_add(l, prev.len())?, GF(0));
@@ -648,16 +630,15 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
     }
 }
 
-/// Solve the syndrome matrix equation for v,v-1,...1 using a
-/// LU decomposition.
+/// Syndrome matrix denklemini v, v-1, ..., 1 için LU decomposition kullanarak çözer.
 #[allow(unused)]
 fn find_inv_error_locations_lu(syndomes: &[GF]) -> Result<Vec<GF>, ErrorDecodingError> {
     let v = syndomes.len() / 2;
 
-    // step 1: find the error locator polynomial
+    // 1. adım: Error locator polynomial değerini bulur.
 
-    // build syndrome matrix
-    let mut matrix = vec![GF(0); checked_mul(v, v)?]; // row-major order
+    // Syndrome matrix'i oluşturur.
+    let mut matrix = vec![GF(0); checked_mul(v, v)?]; // Row-major sıra
     for i in 0..v {
         for j in 0..v {
             let matrix_index = checked_add(checked_mul(i, v)?, j)?;
@@ -666,7 +647,7 @@ fn find_inv_error_locations_lu(syndomes: &[GF]) -> Result<Vec<GF>, ErrorDecoding
         }
     }
 
-    // try solving for decreasing v
+    // Azalan v değerleri için çözmeyi dener.
     let mut coeff = vec![];
     for vi in (1..=v).rev() {
         let mut m = matrix.clone();
@@ -682,21 +663,21 @@ fn find_inv_error_locations_lu(syndomes: &[GF]) -> Result<Vec<GF>, ErrorDecoding
         }
     }
     if coeff.is_empty() {
-        // This method is not called if all syndromes are zero,
-        // better safe than sorry => return error.
+        // Bütün syndrome değerleri sıfırsa bu yöntem çağrılmaz; yine de güvenli
+        // biçimde hata döndürür.
         return Err(ErrorDecodingError::TooManyErrors);
     }
     coeff.push(GF(1));
     Ok(coeff)
 }
 
-/// Find the error values using Forney's algorithm.
+/// Forney algoritmasıyla hata değerlerini bulur.
 ///
-/// # Params
+/// # Parametreler
 ///
-/// - `inv_x_locs` is the list the inverses of the error locations,
-/// - `lambda` is the list of coefficients for the error locator polynomial (starting with highest)
-/// - `syn` are the syndromes
+/// - `inv_x_locs`, hata konumlarının terslerinin listesidir.
+/// - `lambda`, error locator polynomial katsayılarının en yüksekten başlayan listesidir.
+/// - `syn`, syndrome değerleridir.
 #[allow(unused)]
 fn find_error_values_forney(
     inv_x_locs: &mut [GF],
@@ -732,8 +713,8 @@ fn find_error_values_forney(
             .checked_sub(1)
             .ok_or(ErrorDecodingError::Malfunction)?;
         for (k, lk) in values(lambda, 0, lambda_end)?.iter().copied().enumerate() {
-            // notice that lk is multiplied with usize, this is NOT multiplication
-            // in GF, see Mul<usize> implementation for GF.
+            // lk değerinin usize ile çarpıldığına dikkat edin. Bu GF içinde çarpma
+            // değildir; GF için Mul<usize> implementasyonuna bakın.
             lambda_der_x = lambda_der_x * x_inv + lk * (lambda.len() - k - 1);
         }
 
@@ -743,10 +724,10 @@ fn find_error_values_forney(
         *out = -omega_x / lambda_der_x;
     }
 
-    // compute inverse of x_inv to get error locations
+    // Hata konumlarını elde etmek için x_inv değerinin tersini hesaplar.
     for z in inv_x_locs.iter_mut() {
-        // z is never 0 because the constant coefficient in coeff is 1,
-        // so 0 is not a zero for polynomial
+        // coeff içindeki sabit katsayı 1 olduğundan z hiçbir zaman 0 değildir;
+        // dolayısıyla 0, polynomial'ın sıfırı değildir.
         if *z == GF(0) {
             return Err(ErrorDecodingError::Malfunction);
         }

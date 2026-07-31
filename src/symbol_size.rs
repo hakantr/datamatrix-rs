@@ -17,18 +17,19 @@ use pretty_assertions::assert_eq;
 type SymbolCollection = BTreeSet<SymbolSize>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Set of [symbol sizes](SymbolSize) the encoder is allowed to use.
+/// Encoder'ın kullanmasına izin verilen [symbol size](SymbolSize) kümesi.
 ///
-/// Specifies a list of symbol sizes the encoder will pick from. The smallest
-/// symbol which can hold the data is chosen.
+/// Encoder'ın seçim yapacağı symbol size listesini belirtir. Data'yı tutabilen
+/// en küçük symbol seçilir.
 ///
-/// By [default](SymbolList::default) all standard sizes defined in
-/// ISO 16022 are used. The selection can be restricted to square or rectangular
-/// symbols, symbols within a size range, or by giving an explicit list.
+/// [Varsayılan](SymbolList::default) olarak ISO 16022 içinde tanımlanan bütün
+/// standart size değerleri kullanılır. Seçim kare veya dikdörtgen symbol'lerle,
+/// bir size aralığıyla ya da açık bir liste verilerek sınırlandırılabilir.
 ///
-/// ## Examples
+/// ## Örnekler
 ///
-/// To get all rectangles with maximum height 20, including the rectangle extensions you can write
+/// Rectangular extension dahil, yüksekliği en fazla 20 olan bütün dikdörtgenleri
+/// almak için şunu yazabilirsiniz:
 ///
 /// ```rust
 /// # use datamatrix::{DataMatrix, SymbolList};
@@ -40,16 +41,16 @@ type SymbolCollection = BTreeSet<SymbolSize>;
 /// );
 /// ```
 ///
-/// Because [SymbolSize] and `[SymbolSize; N]` implement `Into<SymbolList>` you can write
+/// [SymbolSize] ve `[SymbolSize; N]`, `Into<SymbolList>` uyguladığı için şunlar yazılabilir:
 ///
 /// ```rust
 /// # use datamatrix::{DataMatrix, SymbolSize};
-/// // a) use one specific symbol size
-/// let code = DataMatrix::encode(b"content to encode", SymbolSize::Square22);
+/// // a) Belirli tek bir symbol size kullanır.
+/// let code = DataMatrix::encode(b"encode edilecek icerik", SymbolSize::Square22);
 ///
-/// // b) custom list of allowed symbol sizes
+/// // b) İzin verilen symbol size değerlerinin özel listesi
 /// let code = DataMatrix::encode(
-///     b"content to encode",
+///     b"encode edilecek icerik",
 ///     [SymbolSize::Square22, SymbolSize::Square26],
 /// );
 /// ```
@@ -58,45 +59,45 @@ pub struct SymbolList {
 }
 
 impl SymbolList {
-    /// Get standard symbol sizes extended by all [DMRE rectangles](https://e-d-c.info/projekte/dmre.html).
+    /// Bütün [DMRE dikdörtgenleriyle](https://e-d-c.info/projekte/dmre.html) genişletilmiş standart symbol size değerlerini döndürür.
     ///
-    /// In ISO 21471 additional rectangular sizes are defined. Be aware that
-    /// your decoder might not recognize these.
+    /// ISO 21471 ek rectangular size değerleri tanımlar. Decoder'ınızın bunları
+    /// tanımayabileceğini göz önünde bulundurun.
     ///
-    /// DMRE stands for Data Matrix Rectangular Extensions.
+    /// DMRE, Data Matrix Rectangular Extensions anlamına gelir.
     pub fn with_extended_rectangles() -> Self {
         Self::with_whitelist(SYMBOL_SIZES.iter().copied())
     }
 
-    /// Remove all non-square symbols from the current selection.
+    /// Geçerli seçimden kare olmayan bütün symbol'leri kaldırır.
     pub fn enforce_square(mut self) -> Self {
         self.symbols.retain(SymbolSize::is_square);
         self
     }
 
-    /// Remove all square symbols from the current selection.
+    /// Geçerli seçimden bütün kare symbol'leri kaldırır.
     pub fn enforce_rectangular(mut self) -> Self {
         self.symbols.retain(|s| !s.is_square());
         self
     }
 
-    /// Only keep symbols with width in the given range.
+    /// Yalnızca genişliği verilen aralıkta olan symbol'leri tutar.
     pub fn enforce_width_in<R: RangeBounds<usize>>(mut self, bounds: R) -> Self {
         self.symbols
             .retain(|s| bounds.contains(&s.block_setup().width));
         self
     }
 
-    /// Only keep symbols with height in the given range.
+    /// Yalnızca yüksekliği verilen aralıkta olan symbol'leri tutar.
     pub fn enforce_height_in<R: RangeBounds<usize>>(mut self, bounds: R) -> Self {
         self.symbols
             .retain(|s| bounds.contains(&s.block_setup().height));
         self
     }
 
-    /// Create a symbol list containing only the given symbols.
+    /// Yalnızca verilen symbol'leri içeren symbol listesi oluşturur.
     ///
-    /// The list does not need to be sorted.
+    /// Listenin sıralı olması gerekmez.
     pub fn with_whitelist<I>(whitelist: I) -> Self
     where
         I: IntoIterator<Item = SymbolSize>,
@@ -112,12 +113,12 @@ impl SymbolList {
         self.symbols.is_empty()
     }
 
-    /// Get a list with all supported symbol sizes.
+    /// Desteklenen bütün symbol size değerlerini içeren listeyi döndürür.
     pub fn all() -> Self {
         Self::with_extended_rectangles()
     }
 
-    /// Check if a symbol size is in this symbol list.
+    /// Bir symbol size değerinin bu symbol listesinde olup olmadığını denetler.
     pub fn contains(&self, symbol_size: &SymbolSize) -> bool {
         self.symbols.contains(symbol_size)
     }
@@ -137,9 +138,9 @@ impl SymbolList {
             .copied()
     }
 
-    /// Codewords left in the smallest symbol that can still hold `size_used` codewords.
+    /// `size_used` codeword'ü hâlâ tutabilen en küçük symbol içindeki boş codeword sayısı.
     ///
-    /// Returns `None` if no symbol in the list is big enough.
+    /// Listedeki hiçbir symbol yeterince büyük değilse `None` döndürür.
     pub(crate) fn space_left_for(&self, size_used: usize) -> Option<usize> {
         self.first_symbol_big_enough_for(size_used)
             .map(|symbol| symbol.num_data_codewords() - size_used)
@@ -152,12 +153,12 @@ impl SymbolList {
                 .next()
                 .map(SymbolSize::num_data_codewords)
         } else {
-            // Min case, try to find a good upper limit
+            // Minimum durumda iyi bir üst sınır bulmayı dener.
             self.symbols
                 .iter()
                 .find(|s| {
-                    // base256 encoding is the lower bound,
-                    // findest smallest symbol size to hold data with base256
+                    // Base256 encoding alt sınırdır; data'yı Base256 ile tutabilen
+                    // en küçük symbol size değerini bulur.
                     s.capacity().min >= input_len
                 })
                 .map(SymbolSize::num_data_codewords)
@@ -192,7 +193,7 @@ impl Extend<SymbolSize> for SymbolList {
 }
 
 impl Default for SymbolList {
-    /// Create a symbol list with all but the DMRE symbol sizes.
+    /// DMRE dışındaki bütün symbol size değerleriyle bir symbol listesi oluşturur.
     fn default() -> Self {
         let symbols = SYMBOL_SIZES.iter().copied().filter(|s| !s.is_dmre());
         Self::with_whitelist(symbols)
@@ -212,9 +213,9 @@ impl<const N: usize> From<[SymbolSize; N]> for SymbolList {
 }
 
 pub(crate) struct Capacity {
-    /// Maximum input size a symbol can theoretically encode
+    /// Bir symbol'ün teorik olarak encode edebileceği azami input boyutu.
     pub(crate) max: usize,
-    /// Minimum input size a symbol can encode
+    /// Bir symbol'ün encode edebileceği asgari input boyutu.
     pub(crate) min: usize,
 }
 
@@ -225,35 +226,54 @@ impl Capacity {
 }
 
 pub(crate) struct BlockSetup {
-    /// Number of interleaved error correction blocks
+    /// Interleaved error correction block sayısı.
     pub(crate) num_ecc_blocks: usize,
-    /// Number of error correction codewords per block
+    /// Block başına error correction codeword sayısı.
     pub(crate) num_ecc_per_block: usize,
-    /// Total width of the symbol including alignment pattern but not quiet zone
+    /// Alignment pattern dahil, quiet zone hariç toplam symbol genişliği.
     pub(crate) width: usize,
-    /// Total height of the symbol including alignment pattern but not quiet zone
+    /// Alignment pattern dahil, quiet zone hariç toplam symbol yüksekliği.
     pub(crate) height: usize,
-    /// Number extra vertical separators (alignment lines)
+    /// Ek dikey ayırıcı (alignment line) sayısı.
     pub(crate) extra_vertical_alignments: usize,
-    /// Number extra horizontal separators (alignment lines)
+    /// Ek yatay ayırıcı (alignment line) sayısı.
     pub(crate) extra_horizontal_alignments: usize,
 }
 
 impl BlockSetup {
     pub(crate) fn content_width(&self) -> usize {
-        self.width - 2 - self.extra_vertical_alignments * 2
+        let Some(extra) = self.extra_vertical_alignments.checked_mul(2) else {
+            crate::invariant_violation("dikey alignment genişliği hesaplanırken taşma oluştu");
+        };
+        let Some(content) = self
+            .width
+            .checked_sub(2)
+            .and_then(|width| width.checked_sub(extra))
+        else {
+            crate::invariant_violation("symbol genişliği alignment çizgileri için yetersiz");
+        };
+        content
     }
 
     pub(crate) fn content_height(&self) -> usize {
-        self.height - 2 - self.extra_horizontal_alignments * 2
+        let Some(extra) = self.extra_horizontal_alignments.checked_mul(2) else {
+            crate::invariant_violation("yatay alignment yüksekliği hesaplanırken taşma oluştu");
+        };
+        let Some(content) = self
+            .height
+            .checked_sub(2)
+            .and_then(|height| height.checked_sub(extra))
+        else {
+            crate::invariant_violation("symbol yüksekliği alignment çizgileri için yetersiz");
+        };
+        content
     }
 }
 
-/// The symbol sizes supported by Data Matrix.
+/// Data Matrix tarafından desteklenen symbol size değerleri.
 ///
-/// The number behind a variant, e.g., [Square10](SymbolSize::Square10),
-/// describes the number of modules (the tiny black squares) the symbol is
-/// tall/wide.
+/// Örneğin [Square10](SymbolSize::Square10) variant adındaki sayı, symbol'ün
+/// yükseklik/genişlik olarak içerdiği module (küçük siyah kare) sayısını belirtir.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(Sequence))]
 pub enum SymbolSize {
@@ -288,41 +308,41 @@ pub enum SymbolSize {
     Rect16x36,
     Rect16x48,
 
-    /// DMRE 8x48 variant
+    /// DMRE 8×48 varyantı
     Rect8x48,
-    /// DMRE 8x64 variant
+    /// DMRE 8×64 varyantı
     Rect8x64,
-    /// DMRE 8x80 variant
+    /// DMRE 8×80 varyantı
     Rect8x80,
-    /// DMRE 8x96 variant
+    /// DMRE 8×96 varyantı
     Rect8x96,
-    /// DMRE 8x120 variant
+    /// DMRE 8×120 varyantı
     Rect8x120,
-    /// DMRE 8x144 variant
+    /// DMRE 8×144 varyantı
     Rect8x144,
-    /// DMRE 12x64 variant
+    /// DMRE 12×64 varyantı
     Rect12x64,
-    /// DMRE 12x88 variant
+    /// DMRE 12×88 varyantı
     Rect12x88,
-    /// DMRE 16x64 variant
+    /// DMRE 16×64 varyantı
     Rect16x64,
-    /// DMRE 20x36 variant
+    /// DMRE 20×36 varyantı
     Rect20x36,
-    /// DMRE 20x44 variant
+    /// DMRE 20×44 varyantı
     Rect20x44,
-    /// DMRE 20x64 variant
+    /// DMRE 20×64 varyantı
     Rect20x64,
-    /// DMRE 22x48 variant
+    /// DMRE 22×48 varyantı
     Rect22x48,
-    /// DMRE 24x48 variant
+    /// DMRE 24×48 varyantı
     Rect24x48,
-    /// DMRE 24x64 variant
+    /// DMRE 24×64 varyantı
     Rect24x64,
-    /// DMRE 26x40 variant
+    /// DMRE 26×40 varyantı
     Rect26x40,
-    /// DMRE 26x48 variant
+    /// DMRE 26×48 varyantı
     Rect26x48,
-    /// DMRE 26x64 variant
+    /// DMRE 26×64 varyantı
     Rect26x64,
 }
 
@@ -427,7 +447,7 @@ impl SymbolSize {
         )
     }
 
-    /// Symbol is part of the rectangular extension spec (ISO 21471 DMRE).
+    /// Symbol, rectangular extension specification'ın (ISO 21471 DMRE) parçasıdır.
     pub fn is_dmre(&self) -> bool {
         matches!(
             self,
@@ -496,7 +516,7 @@ impl SymbolSize {
             Self::Rect16x64 => Capacity::new(124, 60),
             Self::Rect20x36 => Capacity::new(88, 42),
             Self::Rect20x44 => Capacity::new(112, 54),
-            Self::Rect20x64 => Capacity::new(168, 82), // 186 in the standard, typo
+            Self::Rect20x64 => Capacity::new(168, 82), // Standartta 186 yazıyor; bu bir yazım hatasıdır.
             Self::Rect22x48 => Capacity::new(144, 70),
             Self::Rect24x48 => Capacity::new(160, 78),
             Self::Rect24x64 => Capacity::new(216, 106),
@@ -900,8 +920,13 @@ impl SymbolSize {
     pub(crate) fn num_codewords(&self) -> usize {
         let num_data = self.num_data_codewords();
         let setup = self.block_setup();
-        let num_error = setup.num_ecc_blocks * setup.num_ecc_per_block;
-        num_data + num_error
+        let Some(num_error) = setup.num_ecc_blocks.checked_mul(setup.num_ecc_per_block) else {
+            crate::invariant_violation("error codeword sayısı hesaplanırken taşma oluştu");
+        };
+        let Some(total) = num_data.checked_add(num_error) else {
+            crate::invariant_violation("toplam codeword sayısı hesaplanırken taşma oluştu");
+        };
+        total
     }
 
     pub(crate) fn has_padding_modules(self) -> bool {

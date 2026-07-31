@@ -1,14 +1,14 @@
 use super::{DataEncodingError, EncodingContext, c40};
 use arrayvec::ArrayVec;
 
-fn low_ascii_to_text_symbols(ctx: &mut ArrayVec<u8, 6>, ch: u8) -> Result<(), DataEncodingError> {
+fn low_ascii_to_text_symbols(ctx: &mut ArrayVec<u8, 6>, ch: u8) {
     let new_ch = match ch {
-        // switch case
+        // Büyük/küçük harf dönüşümü
         ch @ b'A'..=b'Z' => ch - b'A' + b'a',
         ch @ b'a'..=b'z' => ch - b'a' + b'A',
         ch => ch,
     };
-    c40::low_ascii_to_c40_symbols(ctx, new_ch)
+    c40::low_ascii_to_c40_symbols(ctx, new_ch);
 }
 
 pub fn in_base_set(ch: u8) -> bool {

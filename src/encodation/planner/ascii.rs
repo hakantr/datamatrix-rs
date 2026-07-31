@@ -3,7 +3,7 @@ use super::{Frac, Plan, StepResult};
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct AsciiPlan<T: ContextInformation> {
-    /// Number of values not yet written
+    /// Henüz yazılmamış değer sayısı.
     ctx: T,
     digits_ahead: usize,
     cost: Frac,
@@ -39,10 +39,10 @@ impl<T: ContextInformation> Plan for AsciiPlan<T> {
     }
 
     fn step(&mut self) -> Option<StepResult> {
-        // compute optimal chars, only do this when we are at a boundary and if not
-        // already done
+        // En uygun karakterleri yalnızca boundary üzerindeyken ve daha önce
+        // hesaplanmamışsa hesaplar.
         if self.digits_ahead == 0 {
-            // count number digits coming
+            // Sıradaki rakamların sayısını belirler.
             let ascii_digits = self
                 .ctx
                 .rest()
@@ -62,7 +62,7 @@ impl<T: ContextInformation> Plan for AsciiPlan<T> {
                     return None;
                 }
                 self.digits_ahead -= 1;
-                // those were already written to ctx above
+                // Bunlar yukarıda zaten context'e yazıldı.
                 self.cost += Frac::new(1, 2);
             } else if ch <= 127 {
                 self.cost += 1;
