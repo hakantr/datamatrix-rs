@@ -26,14 +26,14 @@ default = []
 extended_eci = ["encoding_rs"]
 
 [dependencies]
-arrayvec = { version = "0.7", default-features = false }
-flagset = "0.4"
-encoding_rs = { version = "0.8", optional = true }
+arrayvec = { version = "0.7.8", default-features = false }
+flagset = "0.4.7"
+encoding_rs = { version = "0.8.35", optional = true }
 
 [dev-dependencies]
-image = "0.25"
-krilla = "0.8.1"
-qrcode2 = "0.18.0"
-enum-iterator = "2"
-pretty_assertions = "1.1"
-proptest = "1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+krilla = { version = "0.8.2", default-features = false }
+qrcode2 = { version = "0.18.0", default-features = false }
+enum-iterator = "2.3.0"
+pretty_assertions = "1.4.1"
+proptest = "1.11.0"
