@@ -24,11 +24,13 @@ exit = "deny"
 [features]
 default = []
 extended_eci = ["encoding_rs"]
+gpui = ["dep:gpui"]
 
 [dependencies]
 arrayvec = { version = "0.7.8", default-features = false }
 flagset = "0.4.7"
 encoding_rs = { version = "0.8.35", optional = true }
+gpui = { path = "../gpui/crates/gpui", optional = true, default-features = false }
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }

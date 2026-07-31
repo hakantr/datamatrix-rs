@@ -99,6 +99,10 @@ mod symbol_size;
 
 pub mod data;
 
+/// Yerel GPUI snapshot'ı için Data Matrix rendering bileşenleri.
+#[cfg(feature = "gpui")]
+pub mod gpui;
+
 pub use encodation::EncodationType;
 pub use symbol_size::{SymbolList, SymbolSize};
 
