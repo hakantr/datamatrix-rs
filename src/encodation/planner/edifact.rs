@@ -66,7 +66,6 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
     }
 
     fn write_unlatch(&self) -> Self::Context {
-        assert!(self.ascii_end.is_none());
         let mut ctx = self.ctx.clone();
         // the encoder will call this before any bytes are written
         ctx.write((self.written + 1).min(3));
@@ -87,10 +86,13 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
                     }
                 }
             }
-            if self.ascii_end.is_none() && !is_encodable(self.ctx.peek(0).unwrap()) {
-                return None;
+            if self.ascii_end.is_none() {
+                let ch = self.ctx.peek(0)?;
+                if !is_encodable(ch) {
+                    return None;
+                }
             }
-            let _ = self.ctx.eat().unwrap();
+            self.ctx.eat()?;
             if let Some(portion_per_char) = self.ascii_end {
                 // add (ascii_size / chars_to_read) every char read to get the correct size
                 self.cost += portion_per_char;

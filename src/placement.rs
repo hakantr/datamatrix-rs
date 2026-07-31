@@ -31,7 +31,33 @@ pub enum BitmapConversionError {
     DataSize,
     /// No symbol size was found matching the data size.
     SymbolSize,
+    /// Codeword sayısı seçilen symbol size ile eşleşmiyor.
+    CodewordCount { expected: usize, actual: usize },
+    /// Boyut hesabı hedef mimarinin sınırlarını aştı.
+    ArithmeticOverflow,
+    /// Kütüphane içindeki bir yerleştirme değişmezi bozuldu.
+    InternalError(&'static str),
 }
+
+impl core::fmt::Display for BitmapConversionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Alignment => f.write_str("Data Matrix alignment deseni geçersiz"),
+            Self::Padding => f.write_str("Data Matrix padding deseni geçersiz"),
+            Self::ZeroWidth => f.write_str("bitmap genişliği sıfır olamaz"),
+            Self::DataSize => f.write_str("bitmap verisi belirtilen genişlikle uyuşmuyor"),
+            Self::SymbolSize => f.write_str("bitmap boyutlarına uyan bir symbol size bulunamadı"),
+            Self::CodewordCount { expected, actual } => write!(
+                f,
+                "codeword sayısı geçersiz: {expected} bekleniyordu, {actual} verildi"
+            ),
+            Self::ArithmeticOverflow => f.write_str("bitmap boyut hesabında taşma oluştu"),
+            Self::InternalError(message) => write!(f, "yerleştirme işlemi başarısız: {message}"),
+        }
+    }
+}
+
+impl core::error::Error for BitmapConversionError {}
 
 /// Abstract "bit" type used in [MatrixMap].
 pub trait Bit: Clone + Copy + PartialEq + core::fmt::Debug {
@@ -52,18 +78,21 @@ pub struct MatrixMap<B: Bit> {
 
 impl<M: Bit> MatrixMap<M> {
     /// Create a new, empty matrix for the given symbol size.
-    pub fn new(size: SymbolSize) -> Self {
+    pub fn new(size: SymbolSize) -> Result<Self, BitmapConversionError> {
         let setup = size.block_setup();
         let w = setup.content_width();
         let h = setup.content_height();
-        Self {
-            entries: vec![M::LOW; w * h],
+        let len = w
+            .checked_mul(h)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        Ok(Self {
+            entries: vec![M::LOW; len],
             width: w,
             height: h,
             extra_vertical_alignments: setup.extra_vertical_alignments,
             extra_horizontal_alignments: setup.extra_horizontal_alignments,
             has_padding: size.has_padding_modules(),
-        }
+        })
     }
 
     /// Read the data from a bitmap.
@@ -94,18 +123,37 @@ impl<M: Bit> MatrixMap<M> {
         let setup = size.block_setup();
         let w = setup.content_width();
         let h = setup.content_height();
-        let mut entries = Vec::with_capacity(w * h);
+        let content_len = w
+            .checked_mul(h)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let mut entries = Vec::with_capacity(content_len);
 
         let blk_h = h / (setup.extra_horizontal_alignments + 1);
         let blk_w = w / (setup.extra_vertical_alignments + 1);
 
-        for row_chunk in bits.chunks((blk_h + 2) * width) {
-            debug_assert_eq!(row_chunk.len(), (blk_h + 2) * width);
+        let row_chunk_width = blk_h
+            .checked_add(2)
+            .and_then(|rows| rows.checked_mul(width))
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        for row_chunk in bits.chunks(row_chunk_width) {
+            if row_chunk.len() != row_chunk_width {
+                return Err(BitmapConversionError::DataSize);
+            }
 
             // first row must be alternating, the one before all HIGH
-            let first_row = &row_chunk[..width];
-            let last_row = &row_chunk[(blk_h + 1) * width..];
-            debug_assert_eq!(last_row.len(), width);
+            let first_row = row_chunk
+                .get(..width)
+                .ok_or(BitmapConversionError::DataSize)?;
+            let last_start = blk_h
+                .checked_add(1)
+                .and_then(|row| row.checked_mul(width))
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let last_row = row_chunk
+                .get(last_start..)
+                .ok_or(BitmapConversionError::DataSize)?;
+            if last_row.len() != width {
+                return Err(BitmapConversionError::DataSize);
+            }
             let alignment_ok = last_row.iter().all(|b| *b == M::HIGH)
                 && first_row
                     .iter()
@@ -115,12 +163,20 @@ impl<M: Bit> MatrixMap<M> {
                 return Err(BitmapConversionError::Alignment);
             }
 
-            let rows = &row_chunk[width..(blk_h + 1) * width];
-            debug_assert_eq!(rows.len(), blk_h * width);
-            debug_assert_eq!(width % (blk_w + 2), 0);
+            let rows = row_chunk
+                .get(width..last_start)
+                .ok_or(BitmapConversionError::DataSize)?;
+            let expected_rows_len = blk_h
+                .checked_mul(width)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            if rows.len() != expected_rows_len || !width.is_multiple_of(blk_w + 2) {
+                return Err(BitmapConversionError::DataSize);
+            }
             let mut alignment_bit = M::LOW;
             for (j, row) in rows.chunks(blk_w + 2).enumerate() {
-                debug_assert_eq!(row.len(), blk_w + 2);
+                if row.len() != blk_w + 2 {
+                    return Err(BitmapConversionError::DataSize);
+                }
                 if j % (setup.extra_vertical_alignments + 1) == 0 {
                     alignment_bit = if alignment_bit == M::LOW {
                         M::HIGH
@@ -128,19 +184,38 @@ impl<M: Bit> MatrixMap<M> {
                         M::LOW
                     };
                 }
-                let alignment_ok = row[0] == M::HIGH && row[blk_w + 1] == alignment_bit;
+                let alignment_ok = row.first().copied() == Some(M::HIGH)
+                    && row.get(blk_w + 1).copied() == Some(alignment_bit);
                 if !alignment_ok {
                     return Err(BitmapConversionError::Alignment);
                 }
-                entries.extend_from_slice(&row[1..blk_w + 1]);
-                debug_assert_eq!(row[1..=blk_w].len(), blk_w);
+                let content = row
+                    .get(1..blk_w + 1)
+                    .ok_or(BitmapConversionError::DataSize)?;
+                entries.extend_from_slice(content);
             }
         }
-        debug_assert_eq!(entries.len(), w * h);
+        if entries.len() != content_len {
+            return Err(BitmapConversionError::DataSize);
+        }
 
         if size.has_padding_modules() {
-            let padding_ok = entries[entries.len() - 2..] == [M::LOW, M::HIGH]
-                && entries[entries.len() - w - 2..entries.len() - w] == [M::HIGH, M::LOW];
+            let bottom_start = entries
+                .len()
+                .checked_sub(2)
+                .ok_or(BitmapConversionError::DataSize)?;
+            let top_start = entries
+                .len()
+                .checked_sub(
+                    w.checked_add(2)
+                        .ok_or(BitmapConversionError::ArithmeticOverflow)?,
+                )
+                .ok_or(BitmapConversionError::DataSize)?;
+            let top_end = top_start
+                .checked_add(2)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let padding_ok = entries.get(bottom_start..) == Some([M::LOW, M::HIGH].as_slice())
+                && entries.get(top_start..top_end) == Some([M::HIGH, M::LOW].as_slice());
             if !padding_ok {
                 return Err(BitmapConversionError::Padding);
             }
@@ -158,20 +233,54 @@ impl<M: Bit> MatrixMap<M> {
     }
 
     /// Write a 4x4 padding pattern in the lower right corner if needed.
-    pub fn write_padding(&mut self) {
+    pub fn write_padding(&mut self) -> Result<(), BitmapConversionError> {
         if self.has_padding {
-            *self.bit_mut(self.height - 2, self.width - 2) = M::HIGH;
-            *self.bit_mut(self.height - 1, self.width - 1) = M::HIGH;
+            let first_row =
+                self.height
+                    .checked_sub(2)
+                    .ok_or(BitmapConversionError::InternalError(
+                        "padding için matrix yüksekliği yetersiz",
+                    ))?;
+            let first_col =
+                self.width
+                    .checked_sub(2)
+                    .ok_or(BitmapConversionError::InternalError(
+                        "padding için matrix genişliği yetersiz",
+                    ))?;
+            let last_row =
+                self.height
+                    .checked_sub(1)
+                    .ok_or(BitmapConversionError::InternalError(
+                        "padding için matrix yüksekliği yetersiz",
+                    ))?;
+            let last_col =
+                self.width
+                    .checked_sub(1)
+                    .ok_or(BitmapConversionError::InternalError(
+                        "padding için matrix genişliği yetersiz",
+                    ))?;
+            self.set_bit(first_row, first_col, M::HIGH)?;
+            self.set_bit(last_row, last_col, M::HIGH)?;
         }
+        Ok(())
     }
 
     /// Get the content of the matrix as a bitmap with alignment patterns added.
-    pub fn bitmap(&self) -> Bitmap<M> {
-        let h = self.height + 2 + 2 * self.extra_horizontal_alignments;
-        let w = self.width + 2 + 2 * self.extra_vertical_alignments;
-        let mut bits = vec![M::LOW; h * w];
-
-        let idx = |i: usize, j: usize| i * w + j;
+    pub fn bitmap(&self) -> Result<Bitmap<M>, BitmapConversionError> {
+        let h = self
+            .extra_horizontal_alignments
+            .checked_mul(2)
+            .and_then(|extra| self.height.checked_add(2)?.checked_add(extra))
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let w = self
+            .extra_vertical_alignments
+            .checked_mul(2)
+            .and_then(|extra| self.width.checked_add(2)?.checked_add(extra))
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let len = h
+            .checked_mul(w)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let mut bits = vec![M::LOW; len];
 
         // draw horizontal alignments
         let extra_hor = self.extra_horizontal_alignments;
@@ -179,10 +288,10 @@ impl<M: Bit> MatrixMap<M> {
         for i in 0..extra_hor {
             let rows_before = 1 + (blk_h + 2) * i + blk_h;
             for j in 0..w {
-                bits[idx(rows_before, j)] = M::HIGH;
+                set_bitmap_bit(&mut bits, w, rows_before, j, M::HIGH)?;
             }
             for j in (0..w).step_by(2) {
-                bits[idx(rows_before + 1, j)] = M::HIGH;
+                set_bitmap_bit(&mut bits, w, rows_before + 1, j, M::HIGH)?;
             }
         }
 
@@ -192,28 +301,28 @@ impl<M: Bit> MatrixMap<M> {
         for j in 0..extra_ver {
             let cols_before = 1 + (blk_w + 2) * j + blk_w;
             for i in 1..h {
-                bits[idx(i, cols_before + 1)] = M::HIGH;
+                set_bitmap_bit(&mut bits, w, i, cols_before + 1, M::HIGH)?;
             }
             for i in (1..h).step_by(2) {
-                bits[idx(i, cols_before)] = M::HIGH;
+                set_bitmap_bit(&mut bits, w, i, cols_before, M::HIGH)?;
             }
         }
 
         for j in 0..w {
             // draw bottom alignment
-            bits[idx(h - 1, j)] = M::HIGH;
+            set_bitmap_bit(&mut bits, w, h - 1, j, M::HIGH)?;
         }
         for j in (0..w).step_by(2) {
             // draw top alignment
-            bits[idx(0, j)] = M::HIGH;
+            set_bitmap_bit(&mut bits, w, 0, j, M::HIGH)?;
         }
         for i in 0..h {
             // draw left alignment
-            bits[idx(i, 0)] = M::HIGH;
+            set_bitmap_bit(&mut bits, w, i, 0, M::HIGH)?;
         }
         for i in (1..h).step_by(2) {
             // draw right alignment
-            bits[idx(i, w - 1)] = M::HIGH;
+            set_bitmap_bit(&mut bits, w, i, w - 1, M::HIGH)?;
         }
 
         // copy the data
@@ -222,10 +331,10 @@ impl<M: Bit> MatrixMap<M> {
             i += 1 + (i / blk_h) * 2;
             let mut j = b_i % self.width;
             j += 1 + (j / blk_w) * 2;
-            bits[idx(i, j)] = *b;
+            set_bitmap_bit(&mut bits, w, i, j, *b)?;
         }
 
-        Bitmap { width: w, bits }
+        Bitmap::new(bits, w)
     }
 
     /// Traverse the symbol in codeword order and call the function for each position.
@@ -235,74 +344,99 @@ impl<M: Bit> MatrixMap<M> {
     ///
     /// The second argument of `visit` contains the bits of the codewords, most significant
     /// first.
-    pub fn traverse_mut<F>(&mut self, mut visit_fn: F)
+    pub fn traverse_mut<F>(&mut self, mut visit_fn: F) -> Result<(), BitmapConversionError>
     where
-        F: FnMut(usize, [&mut M; 8]),
+        F: FnMut(usize, [&mut M; 8]) -> Result<(), BitmapConversionError>,
     {
         IndexTraversal {
             width: self.width,
             height: self.height,
         }
-        .run(|idx, indices| {
-            visit_fn(idx, self.bits_mut(indices));
-        });
+        .run(|idx, indices| visit_fn(idx, self.bits_mut(indices)?))
     }
 
     /// Nonmutable version of [traverse_mut](Self::traverse_mut).
-    pub fn traverse<F>(&self, mut visit_fn: F)
+    pub fn traverse<F>(&self, mut visit_fn: F) -> Result<(), BitmapConversionError>
     where
-        F: FnMut(usize, [M; 8]),
+        F: FnMut(usize, [M; 8]) -> Result<(), BitmapConversionError>,
     {
         IndexTraversal {
             width: self.width,
             height: self.height,
         }
         .run(|idx, indices| {
+            let [i0, i1, i2, i3, i4, i5, i6, i7] = indices;
             let values = [
-                self.entries[indices[0]],
-                self.entries[indices[1]],
-                self.entries[indices[2]],
-                self.entries[indices[3]],
-                self.entries[indices[4]],
-                self.entries[indices[5]],
-                self.entries[indices[6]],
-                self.entries[indices[7]],
+                self.entry(i0)?,
+                self.entry(i1)?,
+                self.entry(i2)?,
+                self.entry(i3)?,
+                self.entry(i4)?,
+                self.entry(i5)?,
+                self.entry(i6)?,
+                self.entry(i7)?,
             ];
-            visit_fn(idx, values);
-        });
+            visit_fn(idx, values)
+        })
     }
 
-    fn bit_mut(&mut self, i: usize, j: usize) -> &mut M {
-        &mut self.entries[self.width * i + j]
+    fn entry(&self, index: usize) -> Result<M, BitmapConversionError> {
+        self.entries
+            .get(index)
+            .copied()
+            .ok_or(BitmapConversionError::InternalError(
+                "codeword yerleşim konumu matrix sınırlarının dışında",
+            ))
+    }
+
+    fn set_bit(
+        &mut self,
+        row: usize,
+        column: usize,
+        value: M,
+    ) -> Result<(), BitmapConversionError> {
+        let index = bitmap_index(self.width, row, column)?;
+        let bit = self
+            .entries
+            .get_mut(index)
+            .ok_or(BitmapConversionError::InternalError(
+                "matrix konumu sınırların dışında",
+            ))?;
+        *bit = value;
+        Ok(())
     }
 
     /// Get mutable references to the indices specified in `indices`.
-    fn bits_mut(&mut self, indices: [usize; 8]) -> [&mut M; 8] {
-        let mut refs = [None, None, None, None, None, None, None, None];
-        let mut perm: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
-        perm.sort_unstable_by_key(|i| indices[*i as usize]);
-
-        let mut prev = 0;
-        let mut rest: &mut [M] = &mut self.entries;
-        for perm_idx in &perm {
-            let idx = indices[*perm_idx as usize];
-            let (e, new_rest) = rest[(idx - prev)..].split_first_mut().unwrap();
-            refs[*perm_idx as usize] = Some(e);
-            rest = new_rest;
-            prev = idx + 1;
-        }
-
-        [
-            refs[0].take().unwrap(),
-            refs[1].take().unwrap(),
-            refs[2].take().unwrap(),
-            refs[3].take().unwrap(),
-            refs[4].take().unwrap(),
-            refs[5].take().unwrap(),
-            refs[6].take().unwrap(),
-            refs[7].take().unwrap(),
-        ]
+    fn bits_mut(&mut self, indices: [usize; 8]) -> Result<[&mut M; 8], BitmapConversionError> {
+        self.entries.get_disjoint_mut(indices).map_err(|_| {
+            BitmapConversionError::InternalError(
+                "codeword bit konumları geçersiz veya birbiriyle çakışıyor",
+            )
+        })
     }
+}
+
+fn bitmap_index(width: usize, row: usize, column: usize) -> Result<usize, BitmapConversionError> {
+    row.checked_mul(width)
+        .and_then(|start| start.checked_add(column))
+        .ok_or(BitmapConversionError::ArithmeticOverflow)
+}
+
+fn set_bitmap_bit<M: Bit>(
+    bits: &mut [M],
+    width: usize,
+    row: usize,
+    column: usize,
+    value: M,
+) -> Result<(), BitmapConversionError> {
+    let index = bitmap_index(width, row, column)?;
+    let bit = bits
+        .get_mut(index)
+        .ok_or(BitmapConversionError::InternalError(
+            "bitmap konumu sınırların dışında",
+        ))?;
+    *bit = value;
+    Ok(())
 }
 
 struct IndexTraversal {
@@ -311,13 +445,19 @@ struct IndexTraversal {
 }
 
 impl IndexTraversal {
-    fn run<F>(&self, mut visit_fn: F)
+    fn run<F>(&self, mut visit_fn: F) -> Result<(), BitmapConversionError>
     where
-        F: FnMut(usize, [usize; 8]),
+        F: FnMut(usize, [usize; 8]) -> Result<(), BitmapConversionError>,
     {
-        let nrow = self.height as isize;
-        let ncol = self.width as isize;
-        let mut visited = vec![false; (nrow * ncol) as usize];
+        let nrow =
+            isize::try_from(self.height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        let ncol =
+            isize::try_from(self.width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        let entry_count = self
+            .height
+            .checked_mul(self.width)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let mut visited = vec![false; entry_count];
 
         // starting in the correct location for first character, bit 8
         let mut i = 4;
@@ -326,12 +466,19 @@ impl IndexTraversal {
 
         macro_rules! visit {
             ($indices:expr) => {
-                let ii = $indices;
+                let ii = $indices?;
                 for v in ii {
-                    visited[v] = true;
+                    let seen = visited
+                        .get_mut(v)
+                        .ok_or(BitmapConversionError::InternalError(
+                            "codeword yerleşim konumu matrix sınırlarının dışında",
+                        ))?;
+                    *seen = true;
                 }
-                visit_fn(codeword_idx, ii);
-                codeword_idx += 1;
+                visit_fn(codeword_idx, ii)?;
+                codeword_idx = codeword_idx
+                    .checked_add(1)
+                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
             };
         }
 
@@ -351,7 +498,7 @@ impl IndexTraversal {
             }
             // sweep upward diagonally
             loop {
-                if i < nrow && j >= 0 && !visited[(i * ncol + j) as usize] {
+                if i < nrow && j >= 0 && !self.was_visited(&visited, i, j)? {
                     visit!(self.utah(i, j));
                 }
                 i -= 2;
@@ -365,7 +512,7 @@ impl IndexTraversal {
 
             // sweep downward diagonally
             loop {
-                if i >= 0 && j < ncol && !visited[(i * ncol + j) as usize] {
+                if i >= 0 && j < ncol && !self.was_visited(&visited, i, j)? {
                     visit!(self.utah(i, j));
                 }
                 i += 2;
@@ -382,143 +529,206 @@ impl IndexTraversal {
                 break;
             }
         }
+        Ok(())
+    }
+
+    fn was_visited(
+        &self,
+        visited: &[bool],
+        row: isize,
+        column: isize,
+    ) -> Result<bool, BitmapConversionError> {
+        let row = usize::try_from(row).map_err(|_| {
+            BitmapConversionError::InternalError("negatif matrix satırı ziyaret edilmeye çalışıldı")
+        })?;
+        let column = usize::try_from(column).map_err(|_| {
+            BitmapConversionError::InternalError("negatif matrix sütunu ziyaret edilmeye çalışıldı")
+        })?;
+        let index = bitmap_index(self.width, row, column)?;
+        visited
+            .get(index)
+            .copied()
+            .ok_or(BitmapConversionError::InternalError(
+                "ziyaret edilen matrix konumu sınırların dışında",
+            ))
     }
 
     /// Compute index with wrapping
-    fn idx(&self, mut i: isize, mut j: isize) -> usize {
-        let h = self.height as isize;
-        let w = self.width as isize;
+    fn idx(&self, mut i: isize, mut j: isize) -> Result<usize, BitmapConversionError> {
+        let h =
+            isize::try_from(self.height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        let w =
+            isize::try_from(self.width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
         if i < 0 {
-            i += h;
-            j += 4 - ((h + 4) % 8);
+            i = i
+                .checked_add(h)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let adjustment = 4 - ((h + 4) % 8);
+            j = j
+                .checked_add(adjustment)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
         }
         if j < 0 {
-            j += w;
-            i += 4 - ((w + 4) % 8);
+            j = j
+                .checked_add(w)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            let adjustment = 4 - ((w + 4) % 8);
+            i = i
+                .checked_add(adjustment)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
         }
         // this is needed for DMRE sizes
         if i >= h {
-            i -= h;
+            i = i
+                .checked_sub(h)
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
         }
-        debug_assert!(i >= 0 && i < h);
-        debug_assert!(j >= 0 && j < w);
-        (i * w + j) as usize
+        if !(i >= 0 && i < h && j >= 0 && j < w) {
+            return Err(BitmapConversionError::InternalError(
+                "sarmalanmış codeword konumu matrix sınırlarının dışında",
+            ));
+        }
+        let row = usize::try_from(i).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        let column = usize::try_from(j).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        bitmap_index(self.width, row, column)
     }
 
     /// Compute indices for utah-shaped symbol (the standard symbol)
-    fn utah(&self, i: isize, j: isize) -> [usize; 8] {
-        [
-            self.idx(i - 2, j - 2),
-            self.idx(i - 2, j - 1),
-            self.idx(i - 1, j - 2),
-            self.idx(i - 1, j - 1),
-            self.idx(i - 1, j),
-            self.idx(i, j - 2),
-            self.idx(i, j - 1),
-            self.idx(i, j),
-        ]
+    fn utah(&self, i: isize, j: isize) -> Result<[usize; 8], BitmapConversionError> {
+        Ok([
+            self.idx(i - 2, j - 2)?,
+            self.idx(i - 2, j - 1)?,
+            self.idx(i - 1, j - 2)?,
+            self.idx(i - 1, j - 1)?,
+            self.idx(i - 1, j)?,
+            self.idx(i, j - 2)?,
+            self.idx(i, j - 1)?,
+            self.idx(i, j)?,
+        ])
     }
 
-    fn corner1(&self) -> [usize; 8] {
-        let h = self.height as isize;
-        let w = self.width as isize;
-        [
-            self.idx(h - 1, 0),
-            self.idx(h - 1, 1),
-            self.idx(h - 1, 2),
-            self.idx(0, w - 2),
-            self.idx(0, w - 1),
-            self.idx(1, w - 1),
-            self.idx(2, w - 1),
-            self.idx(3, w - 1),
-        ]
+    fn dimensions(&self) -> Result<(isize, isize), BitmapConversionError> {
+        Ok((
+            isize::try_from(self.height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?,
+            isize::try_from(self.width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?,
+        ))
     }
 
-    fn corner2(&self) -> [usize; 8] {
-        let h = self.height as isize;
-        let w = self.width as isize;
-        [
-            self.idx(h - 3, 0),
-            self.idx(h - 2, 0),
-            self.idx(h - 1, 0),
-            self.idx(0, w - 4),
-            self.idx(0, w - 3),
-            self.idx(0, w - 2),
-            self.idx(0, w - 1),
-            self.idx(1, w - 1),
-        ]
+    fn corner1(&self) -> Result<[usize; 8], BitmapConversionError> {
+        let (h, w) = self.dimensions()?;
+        Ok([
+            self.idx(h - 1, 0)?,
+            self.idx(h - 1, 1)?,
+            self.idx(h - 1, 2)?,
+            self.idx(0, w - 2)?,
+            self.idx(0, w - 1)?,
+            self.idx(1, w - 1)?,
+            self.idx(2, w - 1)?,
+            self.idx(3, w - 1)?,
+        ])
     }
 
-    fn corner3(&self) -> [usize; 8] {
-        let h = self.height as isize;
-        let w = self.width as isize;
-        [
-            self.idx(h - 3, 0),
-            self.idx(h - 2, 0),
-            self.idx(h - 1, 0),
-            self.idx(0, w - 2),
-            self.idx(0, w - 1),
-            self.idx(1, w - 1),
-            self.idx(2, w - 1),
-            self.idx(3, w - 1),
-        ]
+    fn corner2(&self) -> Result<[usize; 8], BitmapConversionError> {
+        let (h, w) = self.dimensions()?;
+        Ok([
+            self.idx(h - 3, 0)?,
+            self.idx(h - 2, 0)?,
+            self.idx(h - 1, 0)?,
+            self.idx(0, w - 4)?,
+            self.idx(0, w - 3)?,
+            self.idx(0, w - 2)?,
+            self.idx(0, w - 1)?,
+            self.idx(1, w - 1)?,
+        ])
     }
 
-    fn corner4(&self) -> [usize; 8] {
-        let h = self.height as isize;
-        let w = self.width as isize;
-        [
-            self.idx(h - 1, 0),
-            self.idx(h - 1, w - 1),
-            self.idx(0, w - 3),
-            self.idx(0, w - 2),
-            self.idx(0, w - 1),
-            self.idx(1, w - 3),
-            self.idx(1, w - 2),
-            self.idx(1, w - 1),
-        ]
+    fn corner3(&self) -> Result<[usize; 8], BitmapConversionError> {
+        let (h, w) = self.dimensions()?;
+        Ok([
+            self.idx(h - 3, 0)?,
+            self.idx(h - 2, 0)?,
+            self.idx(h - 1, 0)?,
+            self.idx(0, w - 2)?,
+            self.idx(0, w - 1)?,
+            self.idx(1, w - 1)?,
+            self.idx(2, w - 1)?,
+            self.idx(3, w - 1)?,
+        ])
+    }
+
+    fn corner4(&self) -> Result<[usize; 8], BitmapConversionError> {
+        let (h, w) = self.dimensions()?;
+        Ok([
+            self.idx(h - 1, 0)?,
+            self.idx(h - 1, w - 1)?,
+            self.idx(0, w - 3)?,
+            self.idx(0, w - 2)?,
+            self.idx(0, w - 1)?,
+            self.idx(1, w - 3)?,
+            self.idx(1, w - 2)?,
+            self.idx(1, w - 1)?,
+        ])
     }
 }
 
 impl MatrixMap<bool> {
     /// Create a MatrixMap and fills with codewords.
-    pub fn new_with_codewords(data: &[u8], symbol_size: SymbolSize) -> Self {
-        // FIXME: Should not panic if data is too short
-        let mut m = Self::new(symbol_size);
-        m.copy_from_codewords(data);
-        m
+    pub fn new_with_codewords(
+        data: &[u8],
+        symbol_size: SymbolSize,
+    ) -> Result<Self, BitmapConversionError> {
+        let expected = symbol_size.num_codewords();
+        if data.len() != expected {
+            return Err(BitmapConversionError::CodewordCount {
+                expected,
+                actual: data.len(),
+            });
+        }
+        let mut matrix = Self::new(symbol_size)?;
+        matrix.copy_from_codewords(data)?;
+        Ok(matrix)
     }
 
     /// Copy the data from the codewords to the corresponding positions.
     ///
     /// Also writes a padding pattern if necessary.
     ///
-    /// # Panics
-    ///
-    /// Panics if the data is too short.
-    fn copy_from_codewords(&mut self, data: &[u8]) {
+    fn copy_from_codewords(&mut self, data: &[u8]) -> Result<(), BitmapConversionError> {
+        let expected = self.entries.len() / 8;
         self.traverse_mut(|idx, bits| {
-            let mut codeword = data[idx];
+            let mut codeword =
+                data.get(idx)
+                    .copied()
+                    .ok_or(BitmapConversionError::CodewordCount {
+                        expected,
+                        actual: data.len(),
+                    })?;
             for bit in bits.into_iter().rev() {
                 *bit = codeword & 1 == 1;
                 codeword >>= 1;
             }
-        });
-        self.write_padding();
+            Ok(())
+        })?;
+        self.write_padding()
     }
 
     /// Extract the codewords.
     ///
     /// This includes the error correction codewords.
-    pub fn codewords(&self) -> Vec<u8> {
+    pub fn codewords(&self) -> Result<Vec<u8>, BitmapConversionError> {
         let mut data = vec![0; self.entries.len() / 8];
         self.traverse(|idx, bits| {
-            let codeword = &mut data[idx];
+            let codeword = data
+                .get_mut(idx)
+                .ok_or(BitmapConversionError::InternalError(
+                    "çıkarılan codeword konumu çıktı sınırlarının dışında",
+                ))?;
             for bit in bits {
                 *codeword = (*codeword << 1) | (bit as u8);
             }
-        });
-        data
+            Ok(())
+        })?;
+        Ok(data)
     }
 }
 
@@ -547,24 +757,37 @@ impl<B: Bit> Bitmap<B> {
     /// # use datamatrix::placement::Bitmap;
     /// use qrcode2::{QrCode, Color};
     ///
-    /// let code = QrCode::new(b"Hello, World!!").unwrap();
+    /// let code = QrCode::new(b"Hello, World!!")?;
     /// let width = code.width();
     /// let bits = code.into_colors().into_iter().map(|c| c == Color::Dark);
-    /// let bitmap = Bitmap::new(bits, width);
+    /// let bitmap = Bitmap::new(bits, width)?;
     /// print!("{}", bitmap.unicode());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics if `width` is zero or does not evenly divide the number of bits
-    /// returned by `bits`.
-    pub fn new<T>(bits: T, width: usize) -> Self
+    pub fn new<T>(bits: T, width: usize) -> Result<Self, BitmapConversionError>
     where
         T: IntoIterator<Item = B>,
     {
         let bits = Vec::from_iter(bits);
-        assert_eq!(bits.len() % width, 0);
-        Self { width, bits }
+        if width == 0 {
+            return Err(BitmapConversionError::ZeroWidth);
+        }
+        if !bits.len().is_multiple_of(width) {
+            return Err(BitmapConversionError::DataSize);
+        }
+        let height = bits.len() / width;
+        let graph_width = width
+            .checked_add(1)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        let graph_height = height
+            .checked_add(1)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        graph_width
+            .checked_mul(graph_height)
+            .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+        isize::try_from(graph_width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        isize::try_from(graph_height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+        Ok(Self { width, bits })
     }
 
     /// Return the width of the bitmap (no quiet zone included).
@@ -591,7 +814,12 @@ impl<B: Bit> Bitmap<B> {
                 if i < BORDER || i >= BORDER + height || j < BORDER || j >= BORDER + self.width {
                     B::LOW
                 } else if i - BORDER < height && j - BORDER < self.width {
-                    self.bits[(i - BORDER) * self.width + (j - BORDER)]
+                    let index = (i - BORDER)
+                        .checked_mul(self.width)
+                        .and_then(|row| row.checked_add(j - BORDER));
+                    index
+                        .and_then(|index| self.bits.get(index).copied())
+                        .unwrap_or(B::LOW)
                 } else {
                     B::LOW
                 };
@@ -602,7 +830,8 @@ impl<B: Bit> Bitmap<B> {
         for i in (0..height + 2 * BORDER).step_by(2) {
             for j in 0..(self.width + 2 * BORDER) {
                 let idx = (get(i, j) << 1) | get(i + 1, j);
-                out.push(CHAR[if INVERT { (!idx) & 0b11 } else { idx }]);
+                let char_index = if INVERT { (!idx) & 0b11 } else { idx };
+                out.push(CHAR.get(char_index).copied().unwrap_or(' '));
             }
             out.push('\n');
         }
@@ -634,10 +863,10 @@ impl<B: Bit> Bitmap<B> {
     /// ```rust
     /// # use datamatrix::{DataMatrix, SymbolSize};
     /// let code = DataMatrix::encode(b"Foo", SymbolSize::Square10)?;
-    /// for (x, y) in code.bitmap().pixels() {
+    /// for (x, y) in code.bitmap()?.pixels() {
     ///     // place square/circle at (x, y) to render this Data Matrix
     /// }
-    /// # Ok::<(), datamatrix::data::DataEncodingError>(())
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn pixels(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let w = self.width();
@@ -663,21 +892,24 @@ mod tests {
         const HIGH: Self = (0, 1);
     }
 
-    pub fn log(s: super::SymbolSize) -> Vec<(u16, u8)> {
-        let mut m = super::MatrixMap::<(u16, u8)>::new(s);
-        m.traverse_mut(|cw, bits| {
-            for i in 0..8 {
-                *bits[i as usize] = ((cw + 1) as u16, (i + 1) as u8);
+    pub fn log(
+        symbol_size: super::SymbolSize,
+    ) -> Result<Vec<(u16, u8)>, super::BitmapConversionError> {
+        let mut matrix = super::MatrixMap::<(u16, u8)>::new(symbol_size)?;
+        matrix.traverse_mut(|codeword, bits| {
+            for (index, bit) in bits.into_iter().enumerate() {
+                *bit = ((codeword + 1) as u16, (index + 1) as u8);
             }
-        });
-        m.write_padding();
-        m.entries
+            Ok(())
+        })?;
+        matrix.write_padding()?;
+        Ok(matrix.entries)
     }
 }
 
 #[test]
-fn test_12x12() {
-    let log = tests::log(SymbolSize::Square12);
+fn test_12x12() -> Result<(), BitmapConversionError> {
+    let log = tests::log(SymbolSize::Square12)?;
     #[rustfmt::skip]
     let should = [
         (2,1), (2,2), (3,6), (3,7), (3,8), (4,3), (4,4), (4,5), (1,1), (1,2),
@@ -692,11 +924,12 @@ fn test_12x12() {
         (3,3), (3,4), (3,5), (4,1), (4,2), (12,6), (12,7), (12,8), (0,0), (0,1)
     ];
     assert_eq!(&log, &should);
+    Ok(())
 }
 
 #[test]
-fn test_10x10() {
-    let log = tests::log(SymbolSize::Square10);
+fn test_10x10() -> Result<(), BitmapConversionError> {
+    let log = tests::log(SymbolSize::Square10)?;
     #[rustfmt::skip]
     let should = [
         (2,1), (2,2), (3,6), (3,7), (3,8), (4,3), (4,4), (4,5),
@@ -709,11 +942,12 @@ fn test_10x10() {
         (7,7), (7,8), (3,3), (3,4), (3,5), (4,1), (4,2), (7,6),
     ];
     assert_eq!(&log, &should);
+    Ok(())
 }
 
 #[test]
-fn test_8x32() {
-    let log = tests::log(SymbolSize::Rect8x32);
+fn test_8x32() -> Result<(), BitmapConversionError> {
+    let log = tests::log(SymbolSize::Rect8x32)?;
     #[rustfmt::skip]
     let should = [
         (2,1), (2,2), (3,6), (3,7), (3,8), (4,3), (4,4), (4,5), (8,1), (8,2), (9,6), (9,7), (9,8), (10,3), (10,4), (10,5), (14,1), (14,2), (15,6), (15,7), (15,8), (16,3), (16,4), (16,5), (20,1), (20,2), (1,4), (1,5),
@@ -724,23 +958,26 @@ fn test_8x32() {
         (1,3), (6,6), (6,7), (6,8), (3,3), (3,4), (3,5), (4,1), (4,2), (12,6), (12,7), (12,8), (9,3), (9,4), (9,5), (10,1), (10,2), (18,6), (18,7), (18,8), (15,3), (15,4), (15,5), (16,1), (16,2), (21,6), (21,7), (21,8),
     ];
     assert_eq!(&log, &should);
+    Ok(())
 }
 
 #[test]
-fn test_from_bits_all() {
+fn test_from_bits_all() -> Result<(), BitmapConversionError> {
     let mut random_map = crate::test::random_maps();
     for size in SymbolList::all() {
-        let map = random_map(size);
-        let bitmap = map.bitmap();
-        let (map2, _size) = MatrixMap::try_from_bits(&bitmap.bits, bitmap.width).unwrap();
+        let map = random_map(size)?;
+        let bitmap = map.bitmap()?;
+        let (map2, _size) = MatrixMap::try_from_bits(&bitmap.bits, bitmap.width)?;
         assert_eq!(map.entries, map2.entries);
     }
+    Ok(())
 }
 
 #[test]
-fn test_bitmap_new() {
-    Bitmap::new(vec![true, false], 2);
-    Bitmap::new([true, false], 2);
+fn test_bitmap_new() -> Result<(), BitmapConversionError> {
+    Bitmap::new(vec![true, false], 2)?;
+    Bitmap::new([true, false], 2)?;
     let data = &[true, false];
-    Bitmap::new(data.iter().cloned(), 2);
+    Bitmap::new(data.iter().cloned(), 2)?;
+    Ok(())
 }

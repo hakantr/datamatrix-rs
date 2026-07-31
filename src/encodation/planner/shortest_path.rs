@@ -32,7 +32,7 @@ pub(crate) fn optimize(
     plan.switches.push((0, plan.current()));
 
     // Remove a "switch" to ASCII if we are at the very beginning
-    if written == 0 && plan.switches[0] == (data.len(), EncodationType::Ascii) {
+    if written == 0 && plan.switches.first().copied() == Some((data.len(), EncodationType::Ascii)) {
         plan.switches.remove(0);
     }
 
@@ -80,7 +80,7 @@ fn optimize_plan<'a>(
         let mut at_end = false;
         let use_as_start = iteration == 0;
 
-        let rest_chars = data.len() - iteration;
+        let rest_chars = data.len().checked_sub(iteration)?;
         for mut plan in plans.drain(0..) {
             let plan_copy_before_step = plan.clone();
             let result = if let Some(result) = plan.step() {
@@ -113,7 +113,9 @@ fn optimize_plan<'a>(
                 // we can set this for all modes
                 at_end = true;
             }
-            assert_eq!(result.end, at_end);
+            if result.end != at_end {
+                return None;
+            }
         }
 
         remove_hopeless_cases(&mut new_plan);
@@ -124,19 +126,21 @@ fn optimize_plan<'a>(
 
         if at_end {
             // all plans are at the end of data, pick the best one
-            let plan = new_plan
-                .into_iter()
-                .min_by_key(|p| {
-                    // To decide a tie we use the ordering given by ".index()"
-                    let max_enc = p.switches.iter().map(|e| e.1.index()).max().unwrap();
-                    (p.cost().ceil(), max_enc, p.switches.len())
-                })
-                .unwrap();
+            let plan = new_plan.into_iter().min_by_key(|p| {
+                // To decide a tie we use the ordering given by ".index()"
+                let max_enc = p
+                    .switches
+                    .iter()
+                    .map(|e| e.1.index())
+                    .max()
+                    .unwrap_or(usize::MAX);
+                (p.cost().ceil(), max_enc, p.switches.len())
+            })?;
             return Some(plan);
         }
         core::mem::swap(&mut plans, &mut new_plan);
     }
-    unreachable!()
+    None
 }
 
 // Only keep one minimizer for every start mode.
@@ -145,33 +149,38 @@ fn remove_hopeless_cases(list: &mut Vec<GenericPlan>) {
 
     // only keep min among all plans with tuple (start mode, current mode)
     let mut seen = [false; 6 * 6];
-    let mut removed = 0;
-    for i in 0..list.len() {
-        let pl = &list[i - removed];
+    let mut unique = Vec::with_capacity(list.len());
+    for pl in list.drain(..) {
         let pl_idx = pl.start_mode().index() * 6 + pl.current().index();
-        if seen[pl_idx] {
-            list.remove(i - removed);
-            removed += 1;
-        } else {
-            seen[pl_idx] = true;
+        if let Some(was_seen) = seen.get_mut(pl_idx)
+            && !*was_seen
+        {
+            *was_seen = true;
+            unique.push(pl);
         }
     }
+    *list = unique;
 
     let mut start = 0;
     while start + 1 < list.len() {
-        let first = list[start].clone();
+        let Some(first) = list.get(start).cloned() else {
+            break;
+        };
         // Let's say `first` has current mode A.
         // If the cost of `first` switching to mode B is lower or equal
         // to another plan with current mode B, then we can remove the other plan.
-        let mut removed = 0;
         let mut uncomparable = false;
-        for i in start + 1..list.len() {
-            let second = &list[i - removed];
+        let mut index = start + 1;
+        while index < list.len() {
+            let Some(second) = list.get(index) else {
+                break;
+            };
             if let Some(first_cost) = first.cost_for_switching_to(second.current()) {
                 let second_cost = second.cost();
                 if first_cost < second_cost {
-                    list.remove(i - removed);
-                    removed += 1;
+                    list.remove(index);
+                } else {
+                    index += 1;
                 }
             } else {
                 uncomparable = true;
@@ -237,7 +246,10 @@ fn test_ascii_case1() {
         &SymbolList::default(),
         EncodationType::all(),
     );
-    assert_eq!(result.map(|v| v[0].1), Some(EncodationType::Ascii));
+    assert_eq!(
+        result.and_then(|value| value.first().map(|entry| entry.1)),
+        Some(EncodationType::Ascii)
+    );
 }
 
 #[test]
@@ -250,7 +262,10 @@ fn test_x12_case1() {
         &SymbolList::default(),
         EncodationType::all(),
     );
-    assert_eq!(result.map(|v| v[0].1), Some(EncodationType::X12));
+    assert_eq!(
+        result.and_then(|value| value.first().map(|entry| entry.1)),
+        Some(EncodationType::X12)
+    );
 }
 
 #[test]
@@ -262,7 +277,10 @@ fn test_x12_case2() {
         &SymbolList::default(),
         EncodationType::all(),
     );
-    assert_eq!(result.map(|v| v[0].1), Some(EncodationType::X12));
+    assert_eq!(
+        result.and_then(|value| value.first().map(|entry| entry.1)),
+        Some(EncodationType::X12)
+    );
 }
 
 #[test]
@@ -276,7 +294,10 @@ fn test_x12_case3() {
         &SymbolList::default(),
         EncodationType::all(),
     );
-    assert_eq!(result.map(|v| v[0].1), Some(EncodationType::X12));
+    assert_eq!(
+        result.and_then(|value| value.first().map(|entry| entry.1)),
+        Some(EncodationType::X12)
+    );
 }
 
 #[test]
@@ -288,7 +309,10 @@ fn test_edifact_case1() {
         &SymbolList::default(),
         EncodationType::all(),
     );
-    assert_eq!(result.map(|v| v[0].1), Some(EncodationType::Edifact));
+    assert_eq!(
+        result.and_then(|value| value.first().map(|entry| entry.1)),
+        Some(EncodationType::Edifact)
+    );
 }
 
 #[test]
@@ -313,5 +337,8 @@ fn test_x12_case4() {
         &SymbolList::default(),
         EncodationType::all(),
     );
-    assert_eq!(result.map(|v| v[0].1), Some(EncodationType::X12));
+    assert_eq!(
+        result.and_then(|value| value.first().map(|entry| entry.1)),
+        Some(EncodationType::X12)
+    );
 }

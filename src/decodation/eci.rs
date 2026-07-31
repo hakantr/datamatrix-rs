@@ -11,7 +11,8 @@ pub fn convert(raw: &[u8], ecis: &[(usize, u32)]) -> Result<String, DataDecoding
     let end = (raw.len(), 0);
     let ecis = once(&(0, 0)).chain(ecis.iter()).chain(once(&end));
     for ((i, eci), j) in ecis.clone().zip(ecis.skip(1).map(|x| x.0)) {
-        convert_chunk(&raw[*i..j], *eci, &mut out)?;
+        let chunk = raw.get(*i..j).ok_or(DataDecodingError::CharsetError)?;
+        convert_chunk(chunk, *eci, &mut out)?;
     }
     Ok(out)
 }
@@ -39,7 +40,11 @@ fn convert_chunk(bytes: &[u8], eci: u32, out: &mut String) -> Result<(), DataDec
 }
 
 #[cfg(feature = "extended_eci")]
-fn convert_chunk_extended(bytes: &[u8], eci: u32, out: &mut str) -> Result<(), DataDecodingError> {
+fn convert_chunk_extended(
+    bytes: &[u8],
+    eci: u32,
+    out: &mut String,
+) -> Result<(), DataDecodingError> {
     use encoding_rs::*;
 
     let encoder = match eci {
@@ -80,7 +85,7 @@ fn convert_chunk_extended(bytes: &[u8], eci: u32, out: &mut str) -> Result<(), D
 fn convert_chunk_extended(
     _bytes: &[u8],
     eci: u32,
-    _out: &mut str,
+    _out: &mut String,
 ) -> Result<(), DataDecodingError> {
     match eci {
         0..=13 | 15..=18 | 20..=30 => Err(DataDecodingError::NotImplemented(
@@ -107,11 +112,13 @@ const ISO_8859_11: [char; 88] = [
 
 fn decode_iso_8859_11(bytes: &[u8], out: &mut String) -> Result<(), DataDecodingError> {
     for ch in bytes.iter().copied() {
-        match ch {
-            0x20..=0x7E => out.push(ch as char),
-            0xA0..=251 => out.push(ISO_8859_11[(ch - 128) as usize]),
+        let decoded = match ch {
+            0x20..=0x7E => ch as char,
+            0xA0..=0xDA => table_char(&ISO_8859_11, ch - 0xA0)?,
+            0xDF..=0xFB => table_char(&ISO_8859_11, ch - 0xA0 - 4)?,
             _ => return Err(DataDecodingError::CharsetError),
-        }
+        };
+        out.push(decoded);
     }
     Ok(())
 }
@@ -134,11 +141,52 @@ const ISO_8859_9: [char; 96] = [
 
 fn decode_iso_8859_9(bytes: &[u8], out: &mut String) -> Result<(), DataDecodingError> {
     for ch in bytes.iter().copied() {
-        match ch {
-            0x20..=0x7E => out.push(ch as char),
-            0xA0..=255 => out.push(ISO_8859_9[(ch - 128) as usize]),
+        let decoded = match ch {
+            0x20..=0x7E => ch as char,
+            0xA0..=0xFF => table_char(&ISO_8859_9, ch - 0xA0)?,
             _ => return Err(DataDecodingError::CharsetError),
-        }
+        };
+        out.push(decoded);
     }
     Ok(())
+}
+
+fn table_char(table: &[char], index: u8) -> Result<char, DataDecodingError> {
+    table
+        .get(usize::from(index))
+        .copied()
+        .ok_or(DataDecodingError::CharsetError)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DataDecodingError, decode_iso_8859_9, decode_iso_8859_11};
+    use alloc::string::String;
+
+    #[test]
+    fn iso_8859_9_boundaries_and_turkish_letters() {
+        let mut out = String::new();
+        assert_eq!(
+            decode_iso_8859_9(&[0xA0, 0xD0, 0xDD, 0xDE, 0xF0, 0xFD, 0xFE, 0xFF], &mut out),
+            Ok(())
+        );
+        assert_eq!(out, "\u{00A0}ĞİŞğışÿ");
+    }
+
+    #[test]
+    fn iso_8859_11_boundaries_and_gap() {
+        let mut out = String::new();
+        assert_eq!(
+            decode_iso_8859_11(&[0xA0, 0xA1, 0xDA, 0xDF, 0xE0, 0xFB], &mut out),
+            Ok(())
+        );
+        assert_eq!(out, "\u{00A0}กฺ฿เ๛");
+
+        for undefined in 0xDB..=0xDE {
+            assert_eq!(
+                decode_iso_8859_11(&[undefined], &mut String::new()),
+                Err(DataDecodingError::CharsetError)
+            );
+        }
+    }
 }

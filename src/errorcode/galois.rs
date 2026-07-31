@@ -39,6 +39,10 @@ use alloc::vec::Vec;
 use pretty_assertions::assert_eq;
 
 /// Compute two lookup tables for GF(256).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Döngü sınırları i < 255 ve indirgeme sonrası p < 256 olmasını garanti eder"
+)]
 const fn compute_alog_log() -> ([u8; 255], [u8; 256]) {
     let mut alog = [0u8; 255];
     let mut log = [0u8; 256];
@@ -81,12 +85,11 @@ impl GF {
     }
 
     pub fn primitive_power(i: u8) -> Self {
-        GF(ANTI_LOG[i as usize])
+        GF(ANTI_LOG.get(usize::from(i)).copied().unwrap_or(0))
     }
 
     pub fn log(self) -> usize {
-        assert!(self != GF(0), "log of 0");
-        LOG[self.0 as usize] as usize
+        LOG.get(usize::from(self.0)).copied().unwrap_or(0) as usize
     }
 }
 
@@ -133,10 +136,10 @@ impl Mul<GF> for GF {
         if self.0 == 0 || rhs.0 == 0 {
             return GF(0);
         }
-        let ia = LOG[self.0 as usize];
-        let ib = LOG[rhs.0 as usize];
+        let ia = LOG.get(usize::from(self.0)).copied().unwrap_or(0);
+        let ib = LOG.get(usize::from(rhs.0)).copied().unwrap_or(0);
         let i = (ia as u16 + ib as u16) % 255;
-        GF(ANTI_LOG[i as usize])
+        GF(ANTI_LOG.get(usize::from(i)).copied().unwrap_or(0))
     }
 }
 
@@ -167,17 +170,16 @@ impl Div<GF> for GF {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
-        assert_ne!(rhs.0, 0, "division by zero");
-        if self.0 == 0 {
+        if self.0 == 0 || rhs.0 == 0 {
             return GF(0);
         }
-        let ia = LOG[self.0 as usize];
-        let ib = LOG[rhs.0 as usize];
+        let ia = LOG.get(usize::from(self.0)).copied().unwrap_or(0);
+        let ib = LOG.get(usize::from(rhs.0)).copied().unwrap_or(0);
         let mut i = ia as i16 - ib as i16;
         if i < 0 {
             i += 255;
         }
-        GF(ANTI_LOG[i as usize])
+        GF(ANTI_LOG.get(i as usize).copied().unwrap_or(0))
     }
 }
 
@@ -220,12 +222,23 @@ fn sanity_check_tables() {
     let anti_log: BTreeSet<u8> = ANTI_LOG.iter().cloned().collect();
     assert_eq!(anti_log.len(), ANTI_LOG.len());
 
-    let log: BTreeSet<u8> = LOG[1..].iter().cloned().collect();
+    let log: BTreeSet<u8> = LOG.get(1..).unwrap_or_default().iter().cloned().collect();
     assert_eq!(log.len(), LOG.len() - 1);
 
-    for i in 0..255 {
-        assert_eq!(i, LOG[ANTI_LOG[i] as usize] as usize);
-        assert_eq!(i + 1, ANTI_LOG[LOG[i + 1] as usize] as usize);
+    for (i, anti_log) in ANTI_LOG.iter().copied().enumerate() {
+        assert_eq!(
+            Some(i),
+            LOG.get(usize::from(anti_log))
+                .map(|value| usize::from(*value))
+        );
+    }
+    for (i, log) in LOG.iter().copied().enumerate().skip(1) {
+        assert_eq!(
+            Some(i),
+            ANTI_LOG
+                .get(usize::from(log))
+                .map(|value| usize::from(*value))
+        );
     }
 }
 

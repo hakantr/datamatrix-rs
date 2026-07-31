@@ -18,7 +18,35 @@ pub enum ErrorDecodingError {
     /// This usually means there were a lot of transmission errors, uncorrectable.
     ErrorsOutsideRange,
     Malfunction,
+    DataSize {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidSetup(&'static str),
 }
+
+impl core::fmt::Display for ErrorDecodingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TooManyErrors => {
+                f.write_str("düzeltilebilecek sayıdan fazla codeword hatası var")
+            }
+            Self::ErrorsOutsideRange => {
+                f.write_str("hesaplanan hata konumları codeword aralığının dışında")
+            }
+            Self::Malfunction => f.write_str("Reed–Solomon decoder tutarlı bir çözüm bulamadı"),
+            Self::DataSize { expected, actual } => write!(
+                f,
+                "Reed–Solomon decoder {expected} codeword bekliyordu, {actual} verildi"
+            ),
+            Self::InvalidSetup(message) => {
+                write!(f, "Reed–Solomon decoder yapılandırması geçersiz: {message}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for ErrorDecodingError {}
 
 pub use syndrome_based::decode;
 
@@ -50,12 +78,12 @@ fn chien_search<T: Into<GF> + Copy>(c: &[T]) -> Vec<GF> {
     if c.is_empty() {
         return out;
     }
-    if c.last().copied().unwrap().into() == GF(0) {
+    if c.last().copied().is_some_and(|value| value.into() == GF(0)) {
         out.push(GF(0));
     }
-    if c.len() == 2 {
-        if c[1].into() != GF(0) {
-            out.push(-c[1].into() / c[0].into());
+    if let [c0, c1] = c {
+        if (*c1).into() != GF(0) {
+            out.push(-(*c1).into() / (*c0).into());
         }
         return out;
     }
@@ -80,11 +108,24 @@ fn chien_search<T: Into<GF> + Copy>(c: &[T]) -> Vec<GF> {
 #[allow(unused)]
 fn solve(mat: &mut [GF], b: &mut [GF], row_stride: usize) -> bool {
     let n = b.len();
+    if n == 0 || row_stride < n {
+        return false;
+    }
+    let Some(required) = n.checked_mul(row_stride) else {
+        return false;
+    };
+    if mat.len() < required {
+        return false;
+    }
     let c = |i: usize, j: usize| i * row_stride + j;
     for i in 0..(n - 1) {
-        // find non-zero entry
-        if let Some(i_nz) = (i..n).find(|k| mat[c(*k, i)] != GF(0)) {
-            // swap rows
+        // Sıfır olmayan pivot girdisini bul.
+        if let Some(i_nz) = (i..n).find(|k| {
+            mat.get(c(*k, i))
+                .copied()
+                .is_some_and(|value| value != GF(0))
+        }) {
+            // Satırları değiştir.
             if i_nz != i {
                 b.swap(i, i_nz);
                 for j in 0..n {
@@ -96,33 +137,85 @@ fn solve(mat: &mut [GF], b: &mut [GF], row_stride: usize) -> bool {
         };
 
         for k in i + 1..n {
-            // compute L
-            mat[c(k, i)] /= mat[c(i, i)];
-            // compute U
+            // L değerini hesapla.
+            let Some(entry) = mat.get(c(k, i)).copied() else {
+                return false;
+            };
+            let Some(pivot) = mat.get(c(i, i)).copied() else {
+                return false;
+            };
+            if pivot == GF(0) {
+                return false;
+            }
+            let factor = entry / pivot;
+            let Some(target) = mat.get_mut(c(k, i)) else {
+                return false;
+            };
+            *target = factor;
+
+            // U değerini hesapla.
             for j in i + 1..n {
-                mat[c(k, j)] -= mat[c(k, i)] * mat[c(i, j)];
+                let Some(current) = mat.get(c(k, j)).copied() else {
+                    return false;
+                };
+                let Some(upper) = mat.get(c(i, j)).copied() else {
+                    return false;
+                };
+                let Some(target) = mat.get_mut(c(k, j)) else {
+                    return false;
+                };
+                *target = current - factor * upper;
             }
         }
     }
 
-    if mat[c(n - 1, n - 1)] == GF(0) {
+    let last = n - 1;
+    let Some(last_pivot) = mat.get(c(last, last)).copied() else {
+        return false;
+    };
+    if last_pivot == GF(0) {
         return false;
     }
 
-    // solve Lx = b
+    // Lx = b sistemini çöz.
     for i in 0..n {
         for j in 0..i {
-            let b_j = b[j];
-            b[i] -= mat[c(i, j)] * b_j;
+            let Some(b_j) = b.get(j).copied() else {
+                return false;
+            };
+            let Some(coefficient) = mat.get(c(i, j)).copied() else {
+                return false;
+            };
+            let Some(target) = b.get_mut(i) else {
+                return false;
+            };
+            *target -= coefficient * b_j;
         }
     }
-    // solve Ux = b
+    // Ux = b sistemini çöz.
     for i in (0..n).rev() {
         for j in i + 1..n {
-            let b_j = b[j];
-            b[i] -= mat[c(i, j)] * b_j;
+            let Some(b_j) = b.get(j).copied() else {
+                return false;
+            };
+            let Some(coefficient) = mat.get(c(i, j)).copied() else {
+                return false;
+            };
+            let Some(target) = b.get_mut(i) else {
+                return false;
+            };
+            *target -= coefficient * b_j;
         }
-        b[i] /= mat[c(i, i)];
+        let Some(pivot) = mat.get(c(i, i)).copied() else {
+            return false;
+        };
+        if pivot == GF(0) {
+            return false;
+        }
+        let Some(target) = b.get_mut(i) else {
+            return false;
+        };
+        *target /= pivot;
     }
     true
 }
@@ -192,13 +285,14 @@ fn test_primitive_element_evaluation() {
 }
 
 #[test]
-fn test_error_code() {
+fn test_error_code() -> Result<(), super::ErrorEncodingError> {
     let mut data = vec![1, 2, 3];
-    let ecc = super::encode_error(&data, crate::SymbolSize::Square10);
+    let ecc = super::encode_error(&data, crate::SymbolSize::Square10)?;
     data.extend_from_slice(&ecc);
     let mut syndromes = vec![GF(0); 5];
     primitive_element_evaluation(data.iter().cloned(), &mut syndromes);
     assert_eq!(&syndromes, &[GF(0), GF(0), GF(0), GF(0), GF(0)]);
+    Ok(())
 }
 
 #[test]

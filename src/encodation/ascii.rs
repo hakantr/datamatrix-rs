@@ -26,8 +26,12 @@ pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncoding
         }
         let two_digits = two_digits_coming(ctx.rest());
         if two_digits {
-            let a = ctx.eat().unwrap();
-            let b = ctx.eat().unwrap();
+            let a = ctx.eat().ok_or(DataEncodingError::InternalError(
+                "ASCII planı iki basamak beklerken input sona erdi",
+            ))?;
+            let b = ctx.eat().ok_or(DataEncodingError::InternalError(
+                "ASCII planındaki ikinci basamak input içinde bulunamadı",
+            ))?;
             ctx.push((a - b'0') * 10 + (b - b'0') + 130);
             continue;
         }
@@ -48,7 +52,11 @@ pub(super) fn encoding_size(mut rest: &[u8]) -> usize {
     loop {
         if two_digits_coming(rest) {
             count += 1;
-            rest = &rest[2..];
+            if let Some(tail) = rest.get(2..) {
+                rest = tail;
+            } else {
+                return count;
+            }
             continue;
         }
         if let Some((ch, tail)) = rest.split_first() {

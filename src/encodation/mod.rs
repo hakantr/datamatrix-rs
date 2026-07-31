@@ -43,7 +43,26 @@ use pretty_assertions::assert_eq;
 pub enum DataEncodingError {
     TooMuchOrIllegalData,
     SymbolListEmpty,
+    InvalidEci(u32),
+    ErrorCorrection(crate::errorcode::ErrorEncodingError),
+    InternalError(&'static str),
 }
+
+impl core::fmt::Display for DataEncodingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TooMuchOrIllegalData => {
+                f.write_str("veri seçilen Data Matrix symbol boyutlarına sığmıyor veya geçersiz")
+            }
+            Self::SymbolListEmpty => f.write_str("izin verilen Data Matrix symbol listesi boş"),
+            Self::InvalidEci(eci) => write!(f, "ECI değeri 0..=999999 aralığında olmalı: {eci}"),
+            Self::ErrorCorrection(error) => write!(f, "error correction üretilemedi: {error}"),
+            Self::InternalError(message) => write!(f, "Data Matrix kodlayıcı iç hatası: {message}"),
+        }
+    }
+}
+
+impl core::error::Error for DataEncodingError {}
 
 trait EncodingContext {
     /// Look ahead and switch the mode if necessary.
@@ -60,15 +79,15 @@ trait EncodingContext {
 
     fn eat(&mut self) -> Option<u8>;
 
-    fn backup(&mut self, steps: usize);
+    fn backup(&mut self, steps: usize) -> Result<(), DataEncodingError>;
 
     fn rest(&self) -> &[u8];
 
     fn push(&mut self, ch: u8);
 
-    fn replace(&mut self, index: usize, ch: u8);
+    fn replace(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError>;
 
-    fn insert(&mut self, index: usize, ch: u8);
+    fn insert(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError>;
 
     /// Get the codewords written so far.
     fn codewords(&self) -> &[u8];
@@ -100,13 +119,19 @@ pub(crate) struct GenericDataEncoder<'a> {
 impl<'a> EncodingContext for GenericDataEncoder<'a> {
     fn maybe_switch_mode(&mut self) -> Result<bool, DataEncodingError> {
         let chars_left = self.characters_left();
-        assert!(
-            chars_left >= self.planned_switches[0].0,
-            "expected to call maybe_switch_mode when {} chars left, but now {}",
-            self.planned_switches[0].0,
-            chars_left
-        );
-        let new_mode = if chars_left > 0 && chars_left == self.planned_switches[0].0 {
+        let next_switch =
+            self.planned_switches
+                .first()
+                .copied()
+                .ok_or(DataEncodingError::InternalError(
+                    "Encodation planında sonraki mode switch bulunamadı",
+                ))?;
+        if chars_left < next_switch.0 {
+            return Err(DataEncodingError::InternalError(
+                "Encodation planındaki mode switch konumu geçildi",
+            ));
+        }
+        let new_mode = if chars_left > 0 && chars_left == next_switch.0 {
             let switch = self.planned_switches.remove(0);
             switch.1
         } else {
@@ -114,10 +139,14 @@ impl<'a> EncodingContext for GenericDataEncoder<'a> {
         };
         let switch = new_mode != self.encodation;
         if switch {
-            // switch to new mode if not ASCII
+            // Yeni mode ASCII değilse ilgili LATCH codeword'ünü hazırla.
             self.encodation = new_mode;
             if !new_mode.is_ascii() {
-                self.new_mode = Some(new_mode.latch_from_ascii());
+                self.new_mode = Some(new_mode.latch_from_ascii().ok_or(
+                    DataEncodingError::InternalError(
+                        "ASCII mode'dan geçiş için LATCH codeword bulunamadı",
+                    ),
+                )?);
             }
         }
         Ok(switch)
@@ -134,9 +163,22 @@ impl<'a> EncodingContext for GenericDataEncoder<'a> {
         Some(*ch)
     }
 
-    fn backup(&mut self, steps: usize) {
-        let offset = (self.input.len() - self.data.len()) - steps;
-        self.data = &self.input[offset..];
+    fn backup(&mut self, steps: usize) -> Result<(), DataEncodingError> {
+        let consumed = self.input.len().checked_sub(self.data.len()).ok_or(
+            DataEncodingError::InternalError("input ve kalan veri uzunlukları tutarsız"),
+        )?;
+        let offset = consumed
+            .checked_sub(steps)
+            .ok_or(DataEncodingError::InternalError(
+                "istenen backup miktarı tüketilen input miktarını aşıyor",
+            ))?;
+        self.data = self
+            .input
+            .get(offset..)
+            .ok_or(DataEncodingError::InternalError(
+                "backup sonrasında input dilimi oluşturulamadı",
+            ))?;
+        Ok(())
     }
 
     fn rest(&self) -> &[u8] {
@@ -151,12 +193,25 @@ impl<'a> EncodingContext for GenericDataEncoder<'a> {
         &self.codewords
     }
 
-    fn replace(&mut self, index: usize, ch: u8) {
-        self.codewords[index] = ch;
+    fn replace(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError> {
+        let codeword = self
+            .codewords
+            .get_mut(index)
+            .ok_or(DataEncodingError::InternalError(
+                "değiştirilecek codeword konumu bulunamadı",
+            ))?;
+        *codeword = ch;
+        Ok(())
     }
 
-    fn insert(&mut self, index: usize, ch: u8) {
+    fn insert(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError> {
+        if index > self.codewords.len() {
+            return Err(DataEncodingError::InternalError(
+                "codeword ekleme konumu mevcut uzunluğu aşıyor",
+            ));
+        }
         self.codewords.insert(index, ch);
+        Ok(())
     }
 
     fn set_ascii_until_end(&mut self) {
@@ -186,19 +241,28 @@ impl<'a> GenericDataEncoder<'a> {
     }
 
     pub fn use_macro_if_possible(&mut self) {
-        if !self.codewords.is_empty() && !self.data.ends_with(MACRO_TRAIL) {
+        if !self.codewords.is_empty() || !self.data.ends_with(MACRO_TRAIL) {
             return;
         }
         for (head, cw) in [(MACRO05_HEAD, MACRO05), (MACRO06_HEAD, MACRO06)] {
             if self.data.starts_with(head) {
+                let Some(end) = self.data.len().checked_sub(MACRO_TRAIL.len()) else {
+                    return;
+                };
+                let Some(body) = self.data.get(head.len()..end) else {
+                    return;
+                };
                 self.codewords.push(cw);
-                self.data = &self.data[head.len()..self.data.len() - MACRO_TRAIL.len()];
+                self.data = body;
                 break;
             }
         }
     }
 
-    pub fn write_eci(&mut self, mut c: u32) {
+    pub fn write_eci(&mut self, mut c: u32) -> Result<(), DataEncodingError> {
+        if c > 999_999 {
+            return Err(DataEncodingError::InvalidEci(c));
+        }
         self.codewords.push(ascii::ECI);
         match c {
             0..=126 => self.codewords.push(c as u8 + 1),
@@ -213,8 +277,9 @@ impl<'a> GenericDataEncoder<'a> {
                 self.codewords.push(((c / 254) % 254 + 1) as u8);
                 self.codewords.push((c % 254 + 1) as u8);
             }
-            _ => panic!("illegal ECI code, bigger than 999999"),
+            _ => return Err(DataEncodingError::InvalidEci(c)),
         }
+        Ok(())
     }
 
     pub fn codewords(&mut self) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
@@ -234,7 +299,7 @@ impl<'a> GenericDataEncoder<'a> {
             return Err(DataEncodingError::SymbolListEmpty);
         }
 
-        // bigger than theoretical limit? then fail early
+        // Teorik sınır aşılıyorsa erken hata ver.
         if self.data.len() > self.symbol_list.max_capacity() {
             return Err(DataEncodingError::TooMuchOrIllegalData);
         }
@@ -264,7 +329,11 @@ impl<'a> GenericDataEncoder<'a> {
             if words_written <= 1 {
                 // no mode can do something useful in 1 word (at EOD, but that is fine)
                 no_write_run += 1;
-                assert!(no_write_run <= 5, "no progress in encoder, this is a bug");
+                if no_write_run > 5 {
+                    return Err(DataEncodingError::InternalError(
+                        "encoder art arda altı adım boyunca ilerleme sağlayamadı",
+                    ));
+                }
             } else {
                 no_write_run = 0;
             }
@@ -325,9 +394,10 @@ impl<'a> GenericDataEncoder<'a> {
 }
 
 #[test]
-fn test_empty() {
+fn test_empty() -> Result<(), DataEncodingError> {
     let symbols = crate::SymbolList::default();
     let mut enc = GenericDataEncoder::with_size(&[], &symbols, EncodationType::all(), false);
-    let (cw, _) = GenericDataEncoder::codewords(&mut enc).unwrap();
+    let (cw, _) = GenericDataEncoder::codewords(&mut enc)?;
     assert_eq!(cw, vec![ascii::PAD, 175, 70]);
+    Ok(())
 }

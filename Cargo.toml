@@ -3,12 +3,23 @@ name = "datamatrix"
 version = "0.3.3"
 authors = ["Jannik Schürg <jannik.schuerg+crates@posteo.de>"]
 edition = "2024"
+rust-version = "1.95"
 readme = "README.md"
 license = "Apache-2.0 OR MIT"
 description = "Data Matrix (ECC 200) decoding and encoding with an optimizing encoder"
 repository = "https://github.com/jannschu/datamatrix-rs/"
 categories = ["encoding"]
 keywords = ["codematrix", "datamatrix", "semacode", "no_std"]
+
+[lints.clippy]
+indexing_slicing = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+exit = "deny"
 
 [features]
 default = []

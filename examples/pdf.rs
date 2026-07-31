@@ -7,7 +7,7 @@ use krilla::geom::PathBuilder;
 use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let s = concat!(
         "Shall I compare thee to a summer's day?\n",
         "Thou art more lovely and more temperate.\n",
@@ -24,27 +24,24 @@ fn main() {
         "So long as men can breathe, or eyes can see,\n",
         "So long lives this, and this gives life to thee.",
     );
-    let bitmap = DataMatrix::encode(s.as_bytes(), SymbolList::default())
-        .unwrap()
-        .bitmap();
+    let bitmap = DataMatrix::encode(s.as_bytes(), SymbolList::default())?.bitmap()?;
 
-    // Size of one black square in PDF points (1/72 inch). Here one module is
-    // 1mm wide; you could also derive this from bitmap.width()/bitmap.height()
-    // and the available space.
+    // Tek bir siyah karenin PDF point (1/72 inç) cinsinden boyutu. Burada bir
+    // module 1 mm genişliğindedir; değer bitmap boyutlarından ve kullanılabilir
+    // alandan da türetilebilir.
     const SIZE: f32 = 72.0 / 25.4;
 
-    // krilla uses a top-left origin with the y-axis pointing downwards, which
-    // matches the coordinate system of Bitmap::path(), so the relative steps
-    // can be applied directly. We start one module in from the top-left corner
-    // to leave room for the quiet zone.
+    // krilla, y ekseni aşağı bakan sol üst origin kullanır. Bu sistem
+    // Bitmap::path() ile eşleştiğinden relative adımlar doğrudan uygulanabilir.
+    // Quiet zone için sol üst köşeden bir module içeride başlanır.
     let mut x = SIZE;
     let mut y = SIZE;
     let mut start = (x, y);
 
     let mut pb = PathBuilder::new();
-    // The first subpath starts implicitly (path() does not emit a leading Move).
+    // İlk subpath örtük başlar; path() başlangıçta Move üretmez.
     pb.move_to(x, y);
-    for segment in bitmap.path() {
+    for segment in bitmap.path()? {
         match segment {
             PathSegment::Move(dx, dy) => {
                 x += SIZE * (dx as f32);
@@ -67,17 +64,19 @@ fn main() {
             }
         };
     }
-    let path = pb.finish().unwrap();
+    let path = pb.finish().ok_or_else(|| {
+        std::io::Error::other("Data Matrix için geçerli bir PDF path oluşturulamadı")
+    })?;
 
-    // Create a PDF with a single page holding the Data Matrix and a minimal
-    // quiet zone of one module around it.
+    // Data Matrix'i ve çevresinde bir module genişliğinde quiet zone'u içeren
+    // tek sayfalık bir PDF oluşturur.
     let mut document = Document::new();
     let mut page = document.start_page_with(
         PageSettings::from_wh(
             SIZE * (bitmap.width() + 2) as f32,
             SIZE * (bitmap.height() + 2) as f32,
         )
-        .unwrap(),
+        .ok_or_else(|| std::io::Error::other("PDF sayfa boyutu geçersiz"))?,
     );
     let mut surface = page.surface();
     surface.set_fill(Some(Fill {
@@ -89,6 +88,7 @@ fn main() {
     surface.finish();
     page.finish();
 
-    let pdf = document.finish().unwrap();
-    std::io::stdout().write_all(&pdf).unwrap();
+    let pdf = document.finish()?;
+    std::io::stdout().write_all(&pdf)?;
+    Ok(())
 }

@@ -46,7 +46,7 @@ pub(crate) fn encode_data_internal(
         encoder.use_macro_if_possible();
     }
     if let Some(eci) = eci {
-        encoder.write_eci(eci);
+        encoder.write_eci(eci)?;
     }
     encoder.codewords()
 }
@@ -326,32 +326,25 @@ pub(crate) fn latin1_to_utf8_mut(latin1: &[u8], out: &mut String) -> Option<()> 
 }
 
 #[test]
-fn test_macro() {
+fn test_macro() -> Result<(), DataEncodingError> {
     use crate::encodation::{MACRO05, MACRO06, ascii::PAD};
     use alloc::vec;
 
-    assert_eq!(
-        encode_data(
-            b"[)>\x1E05\x1D01\x1E\x04",
-            &SymbolList::default(),
-            None,
-            EncodationType::all(),
-            true,
-        )
-        .unwrap()
-        .0,
-        vec![MACRO05, 130 + 1, PAD],
-    );
-    assert_eq!(
-        encode_data(
-            b"[)>\x1E06\x1D11\x1E\x04",
-            &SymbolList::default(),
-            None,
-            EncodationType::all(),
-            true,
-        )
-        .unwrap()
-        .0,
-        vec![MACRO06, 130 + 11, PAD],
-    );
+    let macro05 = encode_data(
+        b"[)>\x1E05\x1D01\x1E\x04",
+        &SymbolList::default(),
+        None,
+        EncodationType::all(),
+        true,
+    )?;
+    assert_eq!(macro05.0, vec![MACRO05, 130 + 1, PAD]);
+    let macro06 = encode_data(
+        b"[)>\x1E06\x1D11\x1E\x04",
+        &SymbolList::default(),
+        None,
+        EncodationType::all(),
+        true,
+    )?;
+    assert_eq!(macro06.0, vec![MACRO06, 130 + 11, PAD]);
+    Ok(())
 }

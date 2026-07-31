@@ -60,10 +60,16 @@ impl EncodingContext for TestEncodingContext {
         }
     }
 
-    fn backup(&mut self, steps: usize) {
+    fn backup(&mut self, steps: usize) -> Result<(), DataEncodingError> {
+        if steps > self.removed.len() {
+            return Err(DataEncodingError::InternalError(
+                "test context geri alma miktarı tüketilen veri sayısını aşıyor",
+            ));
+        }
         for i in self.removed.iter().rev().take(steps) {
             self.data.insert(0, *i);
         }
+        Ok(())
     }
 
     fn rest(&self) -> &[u8] {
@@ -74,12 +80,25 @@ impl EncodingContext for TestEncodingContext {
         self.codewords.push(ch);
     }
 
-    fn replace(&mut self, index: usize, ch: u8) {
-        self.codewords[index] = ch;
+    fn replace(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError> {
+        let codeword = self
+            .codewords
+            .get_mut(index)
+            .ok_or(DataEncodingError::InternalError(
+                "test context replace konumu codeword sınırlarının dışında",
+            ))?;
+        *codeword = ch;
+        Ok(())
     }
 
-    fn insert(&mut self, index: usize, ch: u8) {
+    fn insert(&mut self, index: usize, ch: u8) -> Result<(), DataEncodingError> {
+        if index > self.codewords.len() {
+            return Err(DataEncodingError::InternalError(
+                "test context insert konumu codeword sınırlarının dışında",
+            ));
+        }
         self.codewords.insert(index, ch);
+        Ok(())
     }
 
     fn set_ascii_until_end(&mut self) {
@@ -105,8 +124,8 @@ fn enc_mode(data: &[u8], enabled_modes: impl Into<FlagSet<EncodationType>>) -> V
         enabled_modes.into(),
         false,
     )
-    .unwrap()
-    .0
+    .map(|(codewords, _)| codewords)
+    .unwrap_or_default()
 }
 
 #[test]
@@ -208,7 +227,7 @@ fn test_c40_special_cases2() {
 
 #[test]
 fn test_text_encoding_1() {
-    // 239 shifts to Text encodation, 254 unlatches
+    // 239, Text encodation'a geçer; 254 unlatch uygular.
     let words = encode_data(
         b"aimaimaim",
         &SymbolList::default(),
@@ -216,8 +235,8 @@ fn test_text_encoding_1() {
         EncodationType::all(),
         false,
     )
-    .unwrap()
-    .0;
+    .map(|(codewords, _)| codewords)
+    .unwrap_or_default();
     assert_eq!(words, vec![239, 91, 11, 91, 11, 91, 11, 254]);
 }
 
@@ -490,30 +509,49 @@ fn test_base256_8() {
 fn test_base256_9() {
     let words = enc(&create_binary_test_message(276));
     let start = vec![231, 38, 219, 2, 208, 120, 20, 150, 35];
-    assert_eq!(&words[..start.len()], &start);
+    assert_eq!(words.get(..start.len()), Some(start.as_slice()));
     let end = vec![146, 40, 194, 129];
-    assert_eq!(&words[words.len() - end.len()..], &end);
+    assert_eq!(
+        words
+            .len()
+            .checked_sub(end.len())
+            .and_then(|start| words.get(start..)),
+        Some(end.as_slice())
+    );
 }
 
 #[test]
 fn test_base256_10() {
     let words = enc(&create_binary_test_message(277));
     let start = vec![231, 38, 220, 2, 208, 120, 20, 150, 35];
-    assert_eq!(&words[..start.len()], &start);
+    assert_eq!(words.get(..start.len()), Some(start.as_slice()));
     let end = vec![146, 40, 190, 87];
-    assert_eq!(&words[words.len() - end.len()..], &end);
+    assert_eq!(
+        words
+            .len()
+            .checked_sub(end.len())
+            .and_then(|start| words.get(start..)),
+        Some(end.as_slice())
+    );
 }
 
 #[test]
 fn test_c40_unlatching() {
     let codewords = enc(b"AIMAIMAIMAIMaimaimaim");
-    // can be either C40 or X12 encoded
-    assert!(matches!(codewords[0], 230 | 238));
+    // C40 veya X12 encoded olabilir.
+    assert!(
+        codewords
+            .first()
+            .is_some_and(|value| matches!(value, 230 | 238))
+    );
     assert_eq!(
-        &codewords[1..],
-        &[
-            91, 11, 91, 11, 91, 11, 91, 11, 254, 239, 91, 11, 91, 11, 91, 11, 254
-        ]
+        codewords.get(1..),
+        Some(
+            [
+                91, 11, 91, 11, 91, 11, 91, 11, 254, 239, 91, 11, 91, 11, 91, 11, 254
+            ]
+            .as_slice()
+        )
     );
 }
 

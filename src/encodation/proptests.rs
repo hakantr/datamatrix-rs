@@ -68,7 +68,10 @@ fn symbols_strategy() -> impl Strategy<Value = SymbolList> {
         Just(SymbolList::default().enforce_square()),
         any::<prop::sample::Index>().prop_map(|idx| {
             let all: Vec<SymbolSize> = enum_iterator::all::<SymbolSize>().collect();
-            SymbolList::from(all[idx.index(all.len())])
+            all.get(idx.index(all.len()))
+                .copied()
+                .map(SymbolList::from)
+                .unwrap_or_default()
         }),
     ]
 }
@@ -127,8 +130,11 @@ proptest! {
         let modes = modes_from_mask(mask);
         if let Ok((codewords, _)) = encode_data(&data, &SymbolList::default(), None, modes, false) {
             let decoded = decode_data(&codewords);
-            prop_assert!(decoded.is_ok(), "decode failed: {:?} for data {:?}", decoded, data);
-            prop_assert_eq!(decoded.unwrap(), data);
+            if let Ok(decoded) = decoded {
+                prop_assert_eq!(decoded, data);
+            } else {
+                prop_assert!(false, "decode başarısız: {decoded:?}; veri: {data:?}");
+            }
         }
     }
 }

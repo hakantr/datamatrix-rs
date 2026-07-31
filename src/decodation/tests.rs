@@ -19,13 +19,7 @@ fn forth_and_back(data: &[u8]) -> Option<SymbolSize> {
     );
     if let Ok(encoded) = encoded {
         let decoded = decode_data(&encoded.0);
-        assert!(
-            decoded.is_ok(),
-            "err: {:?}, encoded: {:?}",
-            &decoded,
-            &encoded
-        );
-        assert_eq!(data, &decoded.unwrap(), "encoded: {:?}", &encoded);
+        assert_eq!(decoded.as_deref(), Ok(data), "encoded: {:?}", &encoded);
         // println!("encoded: {:?}", &encoded);
         Some(encoded.1)
     } else {

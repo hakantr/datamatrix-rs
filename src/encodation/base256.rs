@@ -19,23 +19,50 @@ fn write_length<T: EncodingContext>(ctx: &mut T, start: usize) -> Result<(), Dat
     let space_left = ctx
         .symbol_size_left(0)
         .ok_or(DataEncodingError::TooMuchOrIllegalData)?;
-    let mut data_written = ctx.codewords().len() - start;
+    let mut data_written =
+        ctx.codewords()
+            .len()
+            .checked_sub(start)
+            .ok_or(DataEncodingError::InternalError(
+                "Base256 başlangıç konumu codeword uzunluğunu aşıyor",
+            ))?;
     if ctx.has_more_characters() || space_left > 0 {
-        let data_count = data_written - 1;
+        let data_count = data_written
+            .checked_sub(1)
+            .ok_or(DataEncodingError::InternalError(
+                "Base256 uzunluk codeword'ü bulunamadı",
+            ))?;
         if data_count <= 249 {
-            ctx.replace(start, data_count as u8);
+            ctx.replace(start, data_count as u8)?;
         } else if data_count <= 1555 {
-            ctx.replace(start, ((data_count / 250) + 249) as u8);
-            ctx.insert(start + 1, (data_count % 250) as u8);
+            ctx.replace(start, ((data_count / 250) + 249) as u8)?;
+            ctx.insert(start + 1, (data_count % 250) as u8)?;
             data_written += 1;
         } else {
-            // if we get here the planner has a bug
-            panic!("base256 data too long, this is an encoding bug");
+            return Err(DataEncodingError::InternalError(
+                "Base256 planı izin verilen 1555 byte sınırını aştı",
+            ));
         }
     }
     for i in 0..data_written {
-        let ch = ctx.codewords()[start + i];
-        ctx.replace(start + i, randomize_255_state(ch, start + i + 1));
+        let index = start
+            .checked_add(i)
+            .ok_or(DataEncodingError::InternalError(
+                "Base256 codeword konumu hesaplanırken taşma oluştu",
+            ))?;
+        let ch = ctx
+            .codewords()
+            .get(index)
+            .copied()
+            .ok_or(DataEncodingError::InternalError(
+                "Base256 codeword konumu bulunamadı",
+            ))?;
+        let position = index
+            .checked_add(1)
+            .ok_or(DataEncodingError::InternalError(
+                "Base256 randomization konumu hesaplanırken taşma oluştu",
+            ))?;
+        ctx.replace(index, randomize_255_state(ch, position))?;
     }
     Ok(())
 }

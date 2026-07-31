@@ -1,33 +1,56 @@
 use datamatrix::{DataMatrix, SymbolList};
 use image::{GrayImage, Luma};
+use std::io;
 
-/// Generate image which only contains a Data Matrix
-fn main() {
-    // Define width and height in pixels of one black square in the image.
-    // Be careful if your space constraints result in non integer sizes for
-    // a black square. In this case you might want to generate smaller image
-    // and then interpolate (rescale).
+/// Yalnızca bir Data Matrix içeren görsel üretir.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Görseldeki tek bir siyah karenin piksel cinsinden genişliği ve yüksekliği.
+    // Alan kısıtları tam sayı olmayan bir boyuta yol açıyorsa daha küçük bir
+    // görsel üretip ardından interpolation (rescale) uygulanabilir.
     const N: usize = 5;
 
-    // Encode "Hello, World!" using the smallest square it can fit into
-    let bitmap = DataMatrix::encode(b"Hello, World!", SymbolList::default().enforce_square())
-        .unwrap()
-        .bitmap();
+    // "Hello, World!" verisini sığabildiği en küçük kareye encode eder.
+    let bitmap =
+        DataMatrix::encode(b"Hello, World!", SymbolList::default().enforce_square())?.bitmap()?;
 
-    // Create an image which only contains the Data Matrix including a quiet zone
-    let width = ((bitmap.width() + 2) * N) as u32;
-    let height = ((bitmap.height() + 2) * N) as u32;
+    // Data Matrix ve quiet zone içeren bir görsel oluşturur.
+    let width = bitmap
+        .width()
+        .checked_add(2)
+        .and_then(|value| value.checked_mul(N))
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| io::Error::other("görsel genişliği u32 sınırını aşıyor"))?;
+    let height = bitmap
+        .height()
+        .checked_add(2)
+        .and_then(|value| value.checked_mul(N))
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| io::Error::other("görsel yüksekliği u32 sınırını aşıyor"))?;
     let mut image = GrayImage::from_pixel(width, height, Luma([255]));
     for (x, y) in bitmap.pixels() {
-        // Write the black square at x, y using NxN black pixels
+        // (x, y) konumundaki siyah kareyi N×N siyah pikselle yazar.
         for i in 0..N {
             for j in 0..N {
-                let x_i = (x + 1) * N + j;
-                let y_j = (y + 1) * N + i;
-                image.put_pixel(x_i as u32, y_j as u32, Luma([0]));
+                let x_i = x
+                    .checked_add(1)
+                    .and_then(|value| value.checked_mul(N))
+                    .and_then(|value| value.checked_add(j))
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| io::Error::other("piksel x koordinatında taşma oluştu"))?;
+                let y_j = y
+                    .checked_add(1)
+                    .and_then(|value| value.checked_mul(N))
+                    .and_then(|value| value.checked_add(i))
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| io::Error::other("piksel y koordinatında taşma oluştu"))?;
+                let pixel = image.get_pixel_mut_checked(x_i, y_j).ok_or_else(|| {
+                    io::Error::other("hesaplanan piksel koordinatı görsel sınırlarının dışında")
+                })?;
+                *pixel = Luma([0]);
             }
         }
     }
 
-    image.save("data_matrix.png").unwrap();
+    image.save("data_matrix.png")?;
+    Ok(())
 }

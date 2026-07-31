@@ -4,24 +4,34 @@ pub(crate) fn is_native_x12(ch: u8) -> bool {
     matches!(ch, 13 | 42 | 62 | 32 | b'0'..=b'9' | b'A'..=b'Z')
 }
 
-fn enc(ch: u8) -> u8 {
-    match ch {
+fn enc(ch: u8) -> Result<u8, DataEncodingError> {
+    let value = match ch {
         13 => 0,
         42 => 1,
         62 => 2,
         b' ' => 3,
         ch @ b'0'..=b'9' => ch - b'0' + 4,
         ch @ b'A'..=b'Z' => ch - b'A' + 14,
-        _ => unreachable!(),
-    }
+        _ => {
+            return Err(DataEncodingError::InternalError(
+                "X12 planı X12 ile kodlanamayan bir karakter üretti",
+            ));
+        }
+    };
+    Ok(value)
 }
 
 pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncodingError> {
     let mut switch = false;
     while ctx.characters_left() >= 3 {
-        let c1 = enc(ctx.eat().unwrap());
-        let c2 = enc(ctx.eat().unwrap());
-        let c3 = enc(ctx.eat().unwrap());
+        let next = |ctx: &mut T| {
+            ctx.eat().ok_or(DataEncodingError::InternalError(
+                "X12 planı üçlü karakter beklerken input sona erdi",
+            ))
+        };
+        let c1 = enc(next(ctx)?)?;
+        let c2 = enc(next(ctx)?)?;
+        let c3 = enc(next(ctx)?)?;
         c40::write_three_values(ctx, c1, c2, c3);
         if ctx.maybe_switch_mode()? {
             switch = true;

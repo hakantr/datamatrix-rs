@@ -59,14 +59,14 @@ impl EncodationType {
     }
 
     /// Get the LATCH codeword to switch to this mode from ASCII.
-    pub(super) fn latch_from_ascii(&self) -> u8 {
+    pub(super) fn latch_from_ascii(&self) -> Option<u8> {
         match self {
-            Self::Ascii => panic!("can not switch from ascii to ascii"),
-            Self::C40 => ascii::LATCH_C40,
-            Self::Text => ascii::LATCH_TEXT,
-            Self::X12 => ascii::LATCH_X12,
-            Self::Edifact => ascii::LATCH_EDIFACT,
-            Self::Base256 => ascii::LATCH_BASE256,
+            Self::Ascii => None,
+            Self::C40 => Some(ascii::LATCH_C40),
+            Self::Text => Some(ascii::LATCH_TEXT),
+            Self::X12 => Some(ascii::LATCH_X12),
+            Self::Edifact => Some(ascii::LATCH_EDIFACT),
+            Self::Base256 => Some(ascii::LATCH_BASE256),
         }
     }
 }

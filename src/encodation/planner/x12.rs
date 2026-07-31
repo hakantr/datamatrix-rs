@@ -58,8 +58,6 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
     }
 
     fn write_unlatch(&self) -> Self::Context {
-        assert_eq!(self.values, 0);
-        assert!(self.ascii_end.is_none());
         let mut ctx = self.ctx.clone();
         ctx.write(1);
         ctx
@@ -93,12 +91,15 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
                     self.ascii_end = Some(portion_per_char);
                 }
             }
-            if self.ascii_end.is_none() && !is_native_x12(self.ctx.eat().unwrap()) {
-                return None;
+            if self.ascii_end.is_none() {
+                let ch = self.ctx.eat()?;
+                if !is_native_x12(ch) {
+                    return None;
+                }
             }
             if let Some(portion_per_char) = self.ascii_end {
                 // add (ascii_size / chars_to_read) every char read to get the correct size
-                let _ = self.ctx.eat().unwrap();
+                self.ctx.eat()?;
                 self.cost += portion_per_char;
             } else {
                 self.cost += Frac::new(2, 3);

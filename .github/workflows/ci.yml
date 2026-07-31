@@ -16,7 +16,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --all
+        run: cargo clippy --all-targets --all-features
 
   format:
     name: Code format
@@ -39,7 +39,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check rustdoc
-        run: cargo doc --no-deps --document-private-items
+        run: cargo doc --all-features --no-deps --document-private-items
 
   unit-test:
     name: Unit tests
@@ -49,7 +49,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
+      - run: cargo test --all-targets --all-features
 
   semantic-versioning:
     name: Check semantic versioning

@@ -5,13 +5,13 @@ use datamatrix::{
     placement::{Bitmap, PathSegment},
 };
 
-fn bitmap_to_typst(bitmap: Bitmap<bool>) -> String {
+fn bitmap_to_typst(bitmap: Bitmap<bool>) -> Result<String, Box<dyn std::error::Error>> {
     let mut img: String = String::new();
     img.push_str("#curve(\n");
     img.push_str("  fill: black,\n");
     img.push_str("  fill-rule: \"even-odd\",\n");
     img.push_str("  curve.move((1pt, 1pt)),\n");
-    for part in bitmap.path() {
+    for part in bitmap.path()? {
         match part {
             PathSegment::Horizontal(n) => {
                 writeln!(img, "  curve.line(({n}pt, 0pt), relative: true),")
@@ -23,19 +23,18 @@ fn bitmap_to_typst(bitmap: Bitmap<bool>) -> String {
                 writeln!(img, "  curve.move(({dx}pt, {dy}pt), relative: true),")
             }
             PathSegment::Close => writeln!(img, "  curve.close(),"),
-        }
-        .unwrap();
+        }?;
     }
     img.push_str(")\n");
-    img
+    Ok(img)
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bitmap = DataMatrix::encode(
         b"Hello, typst!",
         SymbolList::default().enforce_rectangular(),
-    )
-    .unwrap()
-    .bitmap();
-    println!("{}", bitmap_to_typst(bitmap));
+    )?
+    .bitmap()?;
+    println!("{}", bitmap_to_typst(bitmap)?);
+    Ok(())
 }

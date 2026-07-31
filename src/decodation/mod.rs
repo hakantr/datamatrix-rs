@@ -31,6 +31,24 @@ pub enum DataDecodingError {
     ECICode,
 }
 
+impl core::fmt::Display for DataDecodingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnexpectedCharacter(mode, codeword) => {
+                write!(f, "{mode} içinde beklenmeyen codeword: {codeword}")
+            }
+            Self::NotImplemented(feature) => {
+                write!(f, "desteklenmeyen Data Matrix özelliği: {feature}")
+            }
+            Self::UnexpectedEnd => f.write_str("Data Matrix verisi beklenmedik biçimde sona erdi"),
+            Self::CharsetError => f.write_str("ECI karakter kümesi dönüşümü başarısız"),
+            Self::ECICode => f.write_str("ham byte çıktısında ECI codeword desteklenmiyor"),
+        }
+    }
+}
+
+impl core::error::Error for DataDecodingError {}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Reader<'a>(&'a [u8], usize);
 
@@ -88,12 +106,12 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
     let add_macro_trail = match data.peek(0) {
         Some(MACRO05) => {
             out.extend_from_slice(MACRO05_HEAD);
-            let _ = data.eat().unwrap();
+            data.eat()?;
             true
         }
         Some(MACRO06) => {
             out.extend_from_slice(MACRO06_HEAD);
-            let _ = data.eat().unwrap();
+            data.eat()?;
             true
         }
         _ => false,
@@ -106,7 +124,7 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
 
     let fnc1 = data.peek(0) == Some(ascii::FNC1);
     if fnc1 {
-        let _ = data.eat().unwrap();
+        data.eat()?;
     }
 
     while !data.is_empty() {
@@ -174,7 +192,7 @@ fn read_eci(mut data: Reader) -> Result<(Reader, u32), DataDecodingError> {
                 return Err(DataDecodingError::UnexpectedCharacter("2nd after ECI", ch2));
             }
             let mut ch3 = data.eat()?;
-            if !matches!(ch2, 1..=254) {
+            if !matches!(ch3, 1..=254) {
                 return Err(DataDecodingError::UnexpectedCharacter("3rd after ECI", ch3));
             }
             ch1 -= 192;
@@ -314,11 +332,11 @@ fn decode_edifact<'a>(
             // rest is encoded as ASCII
             break;
         }
-        if data.peek(0).unwrap() >> 2 == edifact::UNLATCH {
-            data.eat().unwrap();
+        if data.peek(0).is_some_and(|ch| ch >> 2 == edifact::UNLATCH) {
+            data.eat()?;
             break;
         }
-        let mut chunk: u32 = (data.eat().unwrap() as u32) << 16;
+        let mut chunk: u32 = (data.eat()? as u32) << 16;
         let val = (chunk >> 18) as u8;
         if val == edifact::UNLATCH {
             break;
@@ -378,11 +396,11 @@ fn decode_x12<'a>(
     out: &mut Vec<u8>,
 ) -> Result<(Reader<'a>, EncodationType), DataDecodingError> {
     while data.len() > 1 {
-        let first = data.eat().unwrap();
+        let first = data.eat()?;
         if first == UNLATCH {
             break;
         }
-        let second = data.eat().unwrap();
+        let second = data.eat()?;
         let (c1, c2, c3) = decode_c40_tuple(first, second);
 
         out.push(dec_x12_val(c1)?);
@@ -391,7 +409,7 @@ fn decode_x12<'a>(
     }
     if data.len() == 1 && data.peek(0) == Some(UNLATCH) {
         // single UNLATCH at end of data
-        let _ = data.eat().unwrap();
+        data.eat()?;
     }
     Ok((data, EncodationType::Ascii))
 }
@@ -413,17 +431,19 @@ fn decode_c40_like<'a>(
     let mut shift = 0;
     let mut upper_shift = false;
     while data.len() > 1 {
-        let first = data.eat().unwrap();
+        let first = data.eat()?;
         if first == UNLATCH {
             break;
         }
-        let (c1, c2, c3) = decode_c40_tuple(first, data.eat().unwrap());
+        let (c1, c2, c3) = decode_c40_tuple(first, data.eat()?);
         for ch in [c1, c2, c3].iter().copied() {
             if shift == 0 {
                 match ch {
                     ch @ 0..=2 => shift = ch + 1,
                     ch @ 3..=39 => {
-                        let text = map_base[ch as usize - 3];
+                        let text = map_base.get(usize::from(ch - 3)).copied().ok_or(
+                            DataDecodingError::UnexpectedCharacter("not in base c40/text", ch),
+                        )?;
                         if upper_shift {
                             out.push(text + 128);
                             upper_shift = false;
@@ -459,7 +479,9 @@ fn decode_c40_like<'a>(
             } else if shift == 2 {
                 match ch {
                     ch @ 0..=26 => {
-                        let text = SHIFT2[ch as usize];
+                        let text = SHIFT2.get(usize::from(ch)).copied().ok_or(
+                            DataDecodingError::UnexpectedCharacter("not in shift2 c40/text", ch),
+                        )?;
                         if upper_shift {
                             out.push(text + 128);
                             upper_shift = false;
@@ -480,7 +502,9 @@ fn decode_c40_like<'a>(
             } else {
                 match ch {
                     ch @ 0..=31 => {
-                        let text = map_shift3[ch as usize];
+                        let text = map_shift3.get(usize::from(ch)).copied().ok_or(
+                            DataDecodingError::UnexpectedCharacter("not in shift3 c40/text", ch),
+                        )?;
                         if upper_shift {
                             out.push(text + 128);
                             upper_shift = false;
@@ -501,7 +525,7 @@ fn decode_c40_like<'a>(
     }
     if data.len() == 1 && data.peek(0) == Some(UNLATCH) {
         // single UNLATCH at end of data
-        let _ = data.eat().unwrap();
+        data.eat()?;
     }
     Ok((data, EncodationType::Ascii))
 }
@@ -539,27 +563,47 @@ fn test_base256() {
 }
 
 #[test]
-fn test_read_eci() {
+fn test_read_eci() -> Result<(), &'static str> {
     use crate::encodation::GenericDataEncoder;
 
-    fn enc_dec(eci: u32) -> u32 {
+    fn enc_dec(eci: u32) -> Result<u32, &'static str> {
         let symbols = crate::SymbolList::default();
         let mut encoder =
             GenericDataEncoder::with_size(&[], &symbols, EncodationType::all(), false);
-        encoder.write_eci(eci);
-        let (cw, _) = encoder.codewords().unwrap();
-        read_eci(Reader(&cw[1..], 0)).unwrap().1
+        encoder
+            .write_eci(eci)
+            .map_err(|_| "ECI codeword yazılamadı")?;
+        let (codewords, _) = encoder
+            .codewords()
+            .map_err(|_| "ECI codeword listesi tamamlanamadı")?;
+        let encoded_eci = codewords
+            .get(1..)
+            .ok_or("ECI latch sonrasında codeword bulunamadı")?;
+        Ok(read_eci(Reader(encoded_eci, 0))
+            .map_err(|_| "ECI codeword okunamadı")?
+            .1)
     }
 
     for eci in (0..=999999).step_by(31) {
-        assert_eq!(enc_dec(eci), eci);
+        assert_eq!(enc_dec(eci)?, eci);
     }
-    assert_eq!(enc_dec(0), 0);
-    assert_eq!(enc_dec(126), 126);
-    assert_eq!(enc_dec(127), 127);
-    assert_eq!(enc_dec(16382), 16382);
-    assert_eq!(enc_dec(16383), 16383);
-    assert_eq!(enc_dec(999999), 999999);
+    assert_eq!(enc_dec(0)?, 0);
+    assert_eq!(enc_dec(126)?, 126);
+    assert_eq!(enc_dec(127)?, 127);
+    assert_eq!(enc_dec(16382)?, 16382);
+    assert_eq!(enc_dec(16383)?, 16383);
+    assert_eq!(enc_dec(999999)?, 999999);
+
+    for invalid in [0, 255] {
+        assert_eq!(
+            read_eci(Reader(&[192, 1, invalid], 0)),
+            Err(DataDecodingError::UnexpectedCharacter(
+                "3rd after ECI",
+                invalid
+            ))
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -583,11 +627,11 @@ fn test_strict_eot_c40_unlatch() {
 #[test]
 fn test_decode_macro_string() {
     assert_eq!(
-        decode_str(&[MACRO05, b'A' + 1]).unwrap(),
-        "[)>\x1e05\x1dA\x1e\x04",
+        decode_str(&[MACRO05, b'A' + 1]),
+        Ok("[)>\x1e05\x1dA\x1e\x04".into()),
     );
     assert_eq!(
-        decode_str(&[MACRO06, b'A' + 1]).unwrap(),
-        "[)>\x1e06\x1dA\x1e\x04",
+        decode_str(&[MACRO06, b'A' + 1]),
+        Ok("[)>\x1e06\x1dA\x1e\x04".into()),
     );
 }

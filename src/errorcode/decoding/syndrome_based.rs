@@ -5,6 +5,8 @@ use super::ErrorDecodingError;
 use crate::SymbolSize;
 use crate::errorcode::GF;
 
+#[cfg(test)]
+use alloc::boxed::Box;
 use alloc::{vec, vec::Vec};
 
 #[cfg(test)]
@@ -27,15 +29,47 @@ pub fn decode(codewords: &mut [u8], size: SymbolSize) -> Result<(), ErrorDecodin
     let stride = setup.num_ecc_blocks;
     let num_data = size.num_data_codewords();
 
-    // For Square144 the first 8 blocks are 218 codewords (156 data codewords)
-    // and the last two are 217 (155 data codewords). The stride will
-    // be 10 in this case. Using just step_by(10) would give us the wrong error
-    // codewords, so need to step the data and error parts separately...
+    let num_error = stride
+        .checked_mul(err_len)
+        .ok_or(ErrorDecodingError::InvalidSetup(
+            "error codeword sayısı hesaplanırken taşma oluştu",
+        ))?;
+    let expected = num_data
+        .checked_add(num_error)
+        .ok_or(ErrorDecodingError::InvalidSetup(
+            "toplam codeword sayısı hesaplanırken taşma oluştu",
+        ))?;
+    if codewords.len() != expected {
+        return Err(ErrorDecodingError::DataSize {
+            expected,
+            actual: codewords.len(),
+        });
+    }
+    if stride == 0 {
+        return Err(ErrorDecodingError::InvalidSetup(
+            "interleaved block sayısı sıfır olamaz",
+        ));
+    }
+
+    // Square144 için ilk 8 block 218 codeword (156 data codeword), son iki block
+    // ise 217 codeword (155 data codeword) içerir. Bu durumda stride 10'dur.
+    // Yalnızca step_by(10) kullanmak yanlış error codeword'leri seçer; bu nedenle
+    // data ve error bölümleri ayrı ilerletilir.
     let (data, error) = codewords.split_at_mut(num_data);
     for block in 0..setup.num_ecc_blocks {
+        let data_block = data
+            .get_mut(block..)
+            .ok_or(ErrorDecodingError::InvalidSetup(
+                "interleaved data block başlangıcı bulunamadı",
+            ))?;
+        let error_block = error
+            .get_mut(block..)
+            .ok_or(ErrorDecodingError::InvalidSetup(
+                "interleaved error block başlangıcı bulunamadı",
+            ))?;
         decode_gen(
-            &mut data[block..],
-            &mut error[block..],
+            data_block,
+            error_block,
             stride,
             err_len,
             find_inv_error_locations_levinson_durbin,
@@ -55,21 +89,35 @@ fn decode_gen<F, G>(
 ) -> Result<(), ErrorDecodingError>
 where
     F: Fn(&[GF]) -> Result<Vec<GF>, ErrorDecodingError>,
-    G: Fn(&mut [GF], &[GF], &mut [GF]),
+    G: Fn(&mut [GF], &[GF], &mut [GF]) -> Result<(), ErrorDecodingError>,
 {
+    if stride == 0 {
+        return Err(ErrorDecodingError::InvalidSetup("stride sıfır olamaz"));
+    }
     let n_data = data.len().div_ceil(stride);
     let n_error = error.len().div_ceil(stride);
-    let n = n_data + n_error;
-    // generator polynomial has degree d = err_len
-    assert!(err_len >= 1, "degree of generator polynomial must be >= 1");
-    assert!(n > err_len, "data length shorter than error code suffix");
+    let n = n_data
+        .checked_add(n_error)
+        .ok_or(ErrorDecodingError::InvalidSetup(
+            "block codeword sayısı hesaplanırken taşma oluştu",
+        ))?;
+    if err_len == 0 {
+        return Err(ErrorDecodingError::InvalidSetup(
+            "generator polynomial derecesi en az 1 olmalı",
+        ));
+    }
+    if n <= err_len {
+        return Err(ErrorDecodingError::InvalidSetup(
+            "data uzunluğu error codeword son ekinden kısa",
+        ));
+    }
 
     // Actually, Wikipedia has a nice description of the (classic) algorithm at
     // the time of writing this, see
     //
     //    https://en.wikipedia.org/wiki/Reed%E2%80%93Solomon_error_correction#Peterson%E2%80%93Gorenstein%E2%80%93Zierler_decoder
 
-    // 1. Calculate syndromes
+    // 1. Syndrome değerlerini hesapla.
     let mut syndromes = vec![GF(0); err_len];
     let received = data
         .iter()
@@ -81,10 +129,16 @@ where
         return Ok(());
     }
 
-    // 2a. Find error locations
+    // 2a. Hata konumlarını bul.
     let lambda_coeff = inv_error_locs(&syndromes)?;
     let mut inv_error_locations = super::chien_search(&lambda_coeff);
-    if inv_error_locations.len() != lambda_coeff.len() - 1 || inv_error_locations[0] == GF(0) {
+    let lambda_degree = lambda_coeff
+        .len()
+        .checked_sub(1)
+        .ok_or(ErrorDecodingError::Malfunction)?;
+    if inv_error_locations.len() != lambda_degree
+        || inv_error_locations.first().copied() == Some(GF(0))
+    {
         return Err(ErrorDecodingError::Malfunction);
     }
 
@@ -92,10 +146,18 @@ where
     // M. Srinivasan and D. V. Sarwate, Malfunction in the Peterson-Gorenstein-Zierler Decoder,
     // IEEE Trans. Inf. Theory.
     let t = err_len / 2;
-    let v = lambda_coeff.len() - 1;
-    for j in t..=2 * t - v - 1 {
-        debug_assert!(syndromes[j..].len() >= lambda_coeff.len());
-        let t_j: GF = syndromes[j..]
+    let v = lambda_degree;
+    let twice_t = t.checked_mul(2).ok_or(ErrorDecodingError::Malfunction)?;
+    let last_check = twice_t
+        .checked_sub(v)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or(ErrorDecodingError::Malfunction)?;
+    for j in t..=last_check {
+        let syndrome_tail = syndromes.get(j..).ok_or(ErrorDecodingError::Malfunction)?;
+        if syndrome_tail.len() < lambda_coeff.len() {
+            return Err(ErrorDecodingError::Malfunction);
+        }
+        let t_j: GF = syndrome_tail
             .iter()
             .zip(lambda_coeff.iter())
             .map(|(a, b)| *a * *b)
@@ -105,26 +167,84 @@ where
         }
     }
 
-    // 3. Find error values, result is computed in place in `syndromes`
-    find_err_vals(&mut inv_error_locations, &lambda_coeff, &mut syndromes);
+    // 3. Hata değerlerini bul; sonuç `syndromes` içinde yerinde hesaplanır.
+    find_err_vals(&mut inv_error_locations, &lambda_coeff, &mut syndromes)?;
     let error_locations = inv_error_locations;
 
-    // 4. Correct errors
+    // 4. Hataları düzelt.
     for (loc, err) in error_locations.iter().zip(syndromes.iter()) {
         let i = loc.log();
         if i >= n {
             return Err(ErrorDecodingError::ErrorsOutsideRange);
         }
-        let mut idx = (n - i - 1) * stride;
+        let remaining = n
+            .checked_sub(i)
+            .and_then(|value| value.checked_sub(1))
+            .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
+        let mut idx = remaining
+            .checked_mul(stride)
+            .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
         if idx < data.len() {
-            data[idx] = (GF(data[idx]) - *err).into();
+            let target = data
+                .get_mut(idx)
+                .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
+            *target = (GF(*target) - *err).into();
         } else {
-            idx -= data.len();
-            error[idx] = (GF(error[idx]) - *err).into();
+            idx = idx
+                .checked_sub(data.len())
+                .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
+            let target = error
+                .get_mut(idx)
+                .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
+            *target = (GF(*target) - *err).into();
         }
     }
 
     Ok(())
+}
+
+fn value(values: &[GF], index: usize) -> Result<GF, ErrorDecodingError> {
+    values
+        .get(index)
+        .copied()
+        .ok_or(ErrorDecodingError::Malfunction)
+}
+
+fn set_value(values: &mut [GF], index: usize, new_value: GF) -> Result<(), ErrorDecodingError> {
+    let target = values
+        .get_mut(index)
+        .ok_or(ErrorDecodingError::Malfunction)?;
+    *target = new_value;
+    Ok(())
+}
+
+fn values(values: &[GF], start: usize, end: usize) -> Result<&[GF], ErrorDecodingError> {
+    values
+        .get(start..end)
+        .ok_or(ErrorDecodingError::Malfunction)
+}
+
+fn values_mut(
+    values: &mut [GF],
+    start: usize,
+    end: usize,
+) -> Result<&mut [GF], ErrorDecodingError> {
+    values
+        .get_mut(start..end)
+        .ok_or(ErrorDecodingError::Malfunction)
+}
+
+fn values_inclusive(source: &[GF], start: usize, end: usize) -> Result<&[GF], ErrorDecodingError> {
+    let end = end.checked_add(1).ok_or(ErrorDecodingError::Malfunction)?;
+    values(source, start, end)
+}
+
+fn checked_add(a: usize, b: usize) -> Result<usize, ErrorDecodingError> {
+    a.checked_add(b).ok_or(ErrorDecodingError::Malfunction)
+}
+
+fn checked_mul(a: usize, b: usize) -> Result<usize, ErrorDecodingError> {
+    a.checked_mul(b).ok_or(ErrorDecodingError::Malfunction)
 }
 
 /// Find the error locations by exploiting that the syndrome matrix is a Hankel matrix.
@@ -132,29 +252,57 @@ where
 /// See the paper "Levinson-Durbin Algorithm Used For Fast BCH Decoding" by Schmidt and Fettweis.
 fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError> {
     let t = syn.len() / 2;
-
-    // find smallest v such that H_v is nonsingular
-    let mut v = syn.iter().take_while(|s| **s == GF(0)).count() + 1;
-
-    // initialize y = [1/b_v, 0, ..., 0]
-    let mut y = Vec::with_capacity(t);
-    y.push(GF(1) / syn[v - 1]);
-    y.extend(core::iter::repeat_n(GF(0), v - 1));
-
-    // initialize w, solve lower right triangular system H_v w = h_v
-    let mut w = Vec::<GF>::with_capacity(t);
-    w.extend(syn[v..=2 * v - 1].iter().rev());
-    for i in 0..v {
-        for j in v - i..v {
-            let wj = w[j];
-            w[v - 1 - i] -= syn[i + j] * wj;
-        }
-        w[v - 1 - i] /= syn[v - 1];
+    if t == 0 {
+        return Err(ErrorDecodingError::TooManyErrors);
     }
 
-    fn dot(a: &[GF], b: &[GF]) -> GF {
-        debug_assert_eq!(a.len(), b.len());
-        a.iter().zip(b.iter()).map(|(p, q)| *p * *q).sum()
+    // H_v nonsingular olacak şekilde en küçük v değerini bul.
+    let mut v = syn.iter().take_while(|s| **s == GF(0)).count() + 1;
+    if v > t {
+        return Err(ErrorDecodingError::TooManyErrors);
+    }
+
+    // y = [1/b_v, 0, ..., 0] başlangıç değerini oluştur.
+    let mut y = Vec::with_capacity(t);
+    let v_minus_one = v.checked_sub(1).ok_or(ErrorDecodingError::Malfunction)?;
+    let initial_pivot = value(syn, v_minus_one)?;
+    if initial_pivot == GF(0) {
+        return Err(ErrorDecodingError::TooManyErrors);
+    }
+    y.push(GF(1) / initial_pivot);
+    y.extend(core::iter::repeat_n(GF(0), v_minus_one));
+
+    // w başlangıç değerini oluştur ve H_v w = h_v alt-sağ üçgensel sistemini çöz.
+    let mut w = Vec::<GF>::with_capacity(t);
+    let initial_end = checked_mul(2, v)?
+        .checked_sub(1)
+        .ok_or(ErrorDecodingError::Malfunction)?;
+    w.extend(values_inclusive(syn, v, initial_end)?.iter().rev());
+    for i in 0..v {
+        let target_index = v
+            .checked_sub(1)
+            .and_then(|value| value.checked_sub(i))
+            .ok_or(ErrorDecodingError::Malfunction)?;
+        let start = v.checked_sub(i).ok_or(ErrorDecodingError::Malfunction)?;
+        for j in start..v {
+            let wj = value(&w, j)?;
+            let syndrome = value(syn, checked_add(i, j)?)?;
+            let updated = value(&w, target_index)? - syndrome * wj;
+            set_value(&mut w, target_index, updated)?;
+        }
+        let pivot = value(syn, v_minus_one)?;
+        if pivot == GF(0) {
+            return Err(ErrorDecodingError::TooManyErrors);
+        }
+        let updated = value(&w, target_index)? / pivot;
+        set_value(&mut w, target_index, updated)?;
+    }
+
+    fn dot(a: &[GF], b: &[GF]) -> Result<GF, ErrorDecodingError> {
+        if a.len() != b.len() {
+            return Err(ErrorDecodingError::Malfunction);
+        }
+        Ok(a.iter().zip(b.iter()).map(|(p, q)| *p * *q).sum())
     }
 
     let mut tmp = Vec::with_capacity(t);
@@ -162,28 +310,34 @@ fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, Error
     let mut gamma = Vec::with_capacity(t);
 
     while v < t {
-        // Compute tmp = [w_v, - 1]
+        // tmp = [w_v, -1] değerini hesapla.
         tmp.clear();
         tmp.extend_from_slice(&w);
         tmp.push(-GF(1));
 
-        let eps_v: GF = dot(&syn[v..=2 * v], &tmp);
+        let twice_v = checked_mul(2, v)?;
+        let eps_v = dot(values_inclusive(syn, v, twice_v)?, &tmp)?;
         if eps_v != GF(0) {
-            // "The Regular Case"
+            // Düzenli durum.
 
-            // 1. w = [0, w], following steps are all part of eq. (6)
+            // 1. w = [0, w]; sonraki adımlar denklem (6)'nın parçalarıdır.
             w.insert(0, GF(0));
 
             // 2. w[..v] -= eps_v * y
-            for (wi, yi) in w[..v].iter_mut().zip(y.iter()) {
+            for (wi, yi) in values_mut(&mut w, 0, v)?.iter_mut().zip(y.iter()) {
                 *wi -= eps_v * *yi;
             }
 
-            let beta: GF = dot(&syn[v + 1..=2 * v + 1], &tmp) / eps_v;
-            let gamma: GF = dot(&syn[v..=2 * v - 1], &y);
+            let beta_start = checked_add(v, 1)?;
+            let beta_end = checked_add(twice_v, 1)?;
+            let beta = dot(values_inclusive(syn, beta_start, beta_end)?, &tmp)? / eps_v;
+            let gamma_end = twice_v
+                .checked_sub(1)
+                .ok_or(ErrorDecodingError::Malfunction)?;
+            let gamma_value = dot(values_inclusive(syn, v, gamma_end)?, &y)?;
             // 3. w -= (beta - gamma) * eps * y_{v+1}
             for (wi, ti) in w.iter_mut().zip(tmp.iter()) {
-                *wi -= (beta - gamma) * *ti;
+                *wi -= (beta - gamma_value) * *ti;
             }
 
             // 4. y = [w_v, -1] / eps_v, eq. (5)
@@ -194,37 +348,55 @@ fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, Error
             y.push(-eps_inv);
             v += 1;
         } else {
-            // "The Singular Case", statistically rare
+            // Tekil durum; istatistiksel olarak seyrektir.
 
-            // find m, eq. (7), usually m = 1
-            let m = (1..t - v).find_map(|i| {
-                let sigma_i = dot(&syn[v + i..=2 * v + i], &tmp);
+            // Denklem (7)'deki m değerini bul; çoğunlukla m = 1 olur.
+            let search_end = t.checked_sub(v).ok_or(ErrorDecodingError::Malfunction)?;
+            let mut found = None;
+            for i in 1..search_end {
+                let start = checked_add(v, i)?;
+                let end = checked_add(twice_v, i)?;
+                let sigma_i = dot(values_inclusive(syn, start, end)?, &tmp)?;
                 if sigma_i == GF(0) {
-                    None
+                    continue;
                 } else {
-                    Some((i, sigma_i))
+                    found = Some((i, sigma_i));
+                    break;
                 }
-            });
-            let (m, sigma_m) = if let Some((m, sigma_m)) = m {
+            }
+            let (m, sigma_m) = if let Some((m, sigma_m)) = found {
                 (m, sigma_m)
             } else {
                 break;
             };
-            let n = m + v;
+            let n = checked_add(m, v)?;
 
-            // compute the sigma_i used later (defined in eq. (7))
+            // Daha sonra kullanılacak sigma_i değerlerini hesapla (denklem 7).
             sigma.clear();
             sigma.push(sigma_m);
-            sigma.extend((m + 1..=2 * m).map(|k| dot(&syn[v + k..=2 * v + k], &tmp)));
-            debug_assert_eq!(sigma.len(), m + 1);
+            let sigma_start = checked_add(m, 1)?;
+            let sigma_end = checked_mul(2, m)?;
+            for k in sigma_start..=sigma_end {
+                let start = checked_add(v, k)?;
+                let end = checked_add(twice_v, k)?;
+                sigma.push(dot(values_inclusive(syn, start, end)?, &tmp)?);
+            }
+            if sigma.len() != checked_add(m, 1)? {
+                return Err(ErrorDecodingError::Malfunction);
+            }
 
-            // Iterate w^k, store in tmp, eq. (8)
-            tmp.pop(); // tmp = w_v
+            // w^k değerleri üzerinde ilerle ve sonucu tmp içinde tut (denklem 8).
+            tmp.pop().ok_or(ErrorDecodingError::Malfunction)?; // tmp = w_v
             for k in 0..=m {
-                let rho = syn[2 * v + k] - dot(&syn[v..=2 * v - 1], &tmp);
-                let eta = tmp[v - 1];
+                let rho_index = checked_add(twice_v, k)?;
+                let dot_end = twice_v
+                    .checked_sub(1)
+                    .ok_or(ErrorDecodingError::Malfunction)?;
+                let rho = value(syn, rho_index)? - dot(values_inclusive(syn, v, dot_end)?, &tmp)?;
+                let eta_index = v.checked_sub(1).ok_or(ErrorDecodingError::Malfunction)?;
+                let eta = value(&tmp, eta_index)?;
                 // 1. w^k = U * w_k, shift values right
-                tmp.pop();
+                tmp.pop().ok_or(ErrorDecodingError::Malfunction)?;
                 tmp.insert(0, GF(0));
                 // 2. w^k += rho * y + eta * w_v
                 for (wki, (yi, wi)) in tmp.iter_mut().zip(y.iter().zip(w.iter())) {
@@ -232,72 +404,118 @@ fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, Error
                 }
             }
 
-            // update y, eq. (11)
+            // y değerini güncelle (denklem 11).
             y.clear();
-            y.resize(n + 1, GF(0));
+            y.resize(checked_add(n, 1)?, GF(0));
             let sigma_m_inv = GF(1) / sigma_m;
             for (yi, w) in y.iter_mut().zip(w.iter()) {
                 *yi = *w * sigma_m_inv;
             }
-            y[w.len()] = -sigma_m_inv;
+            set_value(&mut y, w.len(), -sigma_m_inv)?;
 
-            // compute gamma, eq. (10)
+            // gamma değerini hesapla (denklem 10).
             gamma.clear();
-            gamma.extend(
-                (0..=m).map(|i| syn[n + v + 1 + i] - dot(&syn[v + i..=2 * v - 1 + i], &tmp)),
-            );
+            for i in 0..=m {
+                let target_index = checked_add(checked_add(checked_add(n, v)?, 1)?, i)?;
+                let start = checked_add(v, i)?;
+                let end = checked_add(
+                    twice_v
+                        .checked_sub(1)
+                        .ok_or(ErrorDecodingError::Malfunction)?,
+                    i,
+                )?;
+                gamma.push(
+                    value(syn, target_index)? - dot(values_inclusive(syn, start, end)?, &tmp)?,
+                );
+            }
             for i in 0..=m {
                 for j in 0..i {
-                    let gj = gamma[j];
-                    gamma[i] -= sigma[i - j] * gj;
+                    let gj = value(&gamma, j)?;
+                    let sigma_value = value(
+                        &sigma,
+                        i.checked_sub(j).ok_or(ErrorDecodingError::Malfunction)?,
+                    )?;
+                    let updated = value(&gamma, i)? - sigma_value * gj;
+                    set_value(&mut gamma, i, updated)?;
                 }
-                gamma[i] /= sigma[0];
+                let divisor = value(&sigma, 0)?;
+                if divisor == GF(0) {
+                    return Err(ErrorDecodingError::Malfunction);
+                }
+                let updated = value(&gamma, i)? / divisor;
+                set_value(&mut gamma, i, updated)?;
             }
 
             if cfg!(debug_assertions) {
                 for i in 0..=m {
                     let mut row = GF(0);
                     for j in 0..=i {
-                        row += sigma[i - j] * gamma[j];
+                        row += value(
+                            &sigma,
+                            i.checked_sub(j).ok_or(ErrorDecodingError::Malfunction)?,
+                        )? * value(&gamma, j)?;
                     }
-                    let target = syn[n + v + 1 + i] - dot(&syn[v + i..=2 * v - 1 + i], &tmp);
-                    debug_assert_eq!(row, target, "gamma, row {}", i);
+                    let target_index = checked_add(checked_add(checked_add(n, v)?, 1)?, i)?;
+                    let start = checked_add(v, i)?;
+                    let end = checked_add(
+                        twice_v
+                            .checked_sub(1)
+                            .ok_or(ErrorDecodingError::Malfunction)?,
+                        i,
+                    )?;
+                    let target =
+                        value(syn, target_index)? - dot(values_inclusive(syn, start, end)?, &tmp)?;
+                    if row != target {
+                        return Err(ErrorDecodingError::Malfunction);
+                    }
                 }
             }
 
-            // update w, first compute result in tmp, eq. (9)
-            tmp.resize(n + 1, GF(0)); // tmp = I_{n+1,v}^0 w^{m+1}_v
+            // w değerini güncelle; önce sonucu tmp içinde hesapla (denklem 9).
+            tmp.resize(checked_add(n, 1)?, GF(0)); // tmp = I_{n+1,v}^0 w^{m+1}_v
             for (i, gamma_i) in gamma.iter().enumerate() {
-                for (ti, wj) in tmp[m - i..].iter_mut().zip(w.iter()) {
+                let start = m.checked_sub(i).ok_or(ErrorDecodingError::Malfunction)?;
+                let tmp_len = tmp.len();
+                for (ti, wj) in values_mut(&mut tmp, start, tmp_len)?
+                    .iter_mut()
+                    .zip(w.iter())
+                {
                     *ti += *gamma_i * *wj;
                 }
-                tmp[m - i + v] -= *gamma_i;
+                let target_index = checked_add(start, v)?;
+                let updated = value(&tmp, target_index)? - *gamma_i;
+                set_value(&mut tmp, target_index, updated)?;
             }
             core::mem::swap(&mut tmp, &mut w);
 
-            v = n + 1;
+            v = checked_add(n, 1)?;
         }
 
         if cfg!(debug_assertions) {
-            debug_assert_eq!(w.len(), v);
-            debug_assert_eq!(y.len(), v);
+            if w.len() != v || y.len() != v {
+                return Err(ErrorDecodingError::Malfunction);
+            }
 
-            // check eq. (3)
+            // Denklem (3)'ü doğrula.
             for i in 0..v {
                 let mut row = GF(0);
                 for j in 0..v {
-                    row += syn[i + j] * y[j];
+                    row += value(syn, checked_add(i, j)?)? * value(&y, j)?;
                 }
                 let target = if i == v - 1 { GF(1) } else { GF(0) };
-                debug_assert_eq!(row, target, "y_{}, row {}", v, i);
+                if row != target {
+                    return Err(ErrorDecodingError::Malfunction);
+                }
             }
-            // check eq. (4)
+            // Denklem (4)'ü doğrula.
             for i in 0..v {
                 let mut row = GF(0);
                 for j in 0..v {
-                    row += syn[i + j] * w[j];
+                    row += value(syn, checked_add(i, j)?)? * value(&w, j)?;
                 }
-                debug_assert_eq!(row, syn[v + i], "w_{}, row {}", v, i);
+                if row != value(syn, checked_add(v, i)?)? {
+                    return Err(ErrorDecodingError::Malfunction);
+                }
             }
         }
     }
@@ -309,36 +527,62 @@ fn find_inv_error_locations_levinson_durbin(syn: &[GF]) -> Result<Vec<GF>, Error
 /// Find error values by solving the coefficient matrix system with the Björck-Pereyra algorithm.
 ///
 /// This runs in O(t^2).
-fn find_error_values_bp(x_loc: &mut [GF], _lambda: &[GF], syn: &mut [GF]) {
+fn find_error_values_bp(
+    x_loc: &mut [GF],
+    _lambda: &[GF],
+    syn: &mut [GF],
+) -> Result<(), ErrorDecodingError> {
     let e = x_loc.len();
-    // compute inverse of zeros to get error locations
+    if e == 0 || syn.len() < e {
+        return Err(ErrorDecodingError::Malfunction);
+    }
+    // Hata konumlarını elde etmek için sıfırların tersini hesapla.
     for z in x_loc.iter_mut() {
-        // z is never 0 because the constant coefficient in coeff is 1,
-        // so 0 is not a zero for polynomial
+        // coeff içindeki sabit katsayı 1 olduğundan z sıfır olamaz.
+        if *z == GF(0) {
+            return Err(ErrorDecodingError::Malfunction);
+        }
         *z = GF(1) / *z;
     }
-    // The coefficient matrix is a product of diagonal matrix and a
-    // Vandermonde matrix.
-    // First use the Björck-Pereyra algorithm to solve the Vandermonde system.
+    // Katsayı matrisi, diagonal matrix ile Vandermonde matrix çarpımıdır.
+    // Önce Vandermonde sistemini Björck-Pereyra algoritmasıyla çöz.
     for (k, x_loc_k) in x_loc.iter().enumerate().take(e - 1) {
         for j in (k + 1..e).rev() {
-            let tmp = syn[j - 1];
-            syn[j] -= *x_loc_k * tmp;
+            let previous = j.checked_sub(1).ok_or(ErrorDecodingError::Malfunction)?;
+            let tmp = value(syn, previous)?;
+            let updated = value(syn, j)? - *x_loc_k * tmp;
+            set_value(syn, j, updated)?;
         }
     }
     for k in (0..e - 1).rev() {
         for j in k + 1..e {
-            syn[j] /= x_loc[j] - x_loc[j - k - 1];
+            let previous = j
+                .checked_sub(k)
+                .and_then(|value| value.checked_sub(1))
+                .ok_or(ErrorDecodingError::Malfunction)?;
+            let divisor = value(x_loc, j)? - value(x_loc, previous)?;
+            if divisor == GF(0) {
+                return Err(ErrorDecodingError::Malfunction);
+            }
+            let updated = value(syn, j)? / divisor;
+            set_value(syn, j, updated)?;
         }
         for j in k..e - 1 {
-            let tmp = syn[j + 1];
-            syn[j] -= tmp;
+            let next = j.checked_add(1).ok_or(ErrorDecodingError::Malfunction)?;
+            let updated = value(syn, j)? - value(syn, next)?;
+            set_value(syn, j, updated)?;
         }
     }
-    // Now solve the diagonal system
+    // Son olarak diagonal sistemi çöz.
     for i in 0..e {
-        syn[i] /= x_loc[i];
+        let divisor = value(x_loc, i)?;
+        if divisor == GF(0) {
+            return Err(ErrorDecodingError::Malfunction);
+        }
+        let updated = value(syn, i)? / divisor;
+        set_value(syn, i, updated)?;
     }
+    Ok(())
 }
 
 /// The Berlekamp-Massey (BM) algorithm for finding error locations.
@@ -350,11 +594,13 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
     let mut l = 1; // l is k - m, the amount of shift in update
     let mut discrepancy_m = GF(1); // previous discrepancy
     for k in 0..syn.len() {
-        // compute discrepancy
-        let discrepancy = syn[k]
-            + cur[1..]
+        // Discrepancy değerini hesapla.
+        let cur_tail = values(&cur, 1, cur.len())?;
+        let syn_prefix = values(syn, 0, k)?;
+        let discrepancy = value(syn, k)?
+            + cur_tail
                 .iter()
-                .zip(syn[..k].iter().rev())
+                .zip(syn_prefix.iter().rev())
                 .map(|(a, b)| *a * *b)
                 .sum();
         if discrepancy == GF(0) {
@@ -362,7 +608,11 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
         } else if 2 * len_lfsr > k {
             // update without length change
             let tmp = discrepancy / discrepancy_m;
-            for (ci, pj) in cur[l..].iter_mut().zip(prev.iter()) {
+            let cur_len = cur.len();
+            for (ci, pj) in values_mut(&mut cur, l, cur_len)?
+                .iter_mut()
+                .zip(prev.iter())
+            {
                 *ci -= tmp * *pj;
             }
             l += 1;
@@ -370,8 +620,12 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
             // update cur with length change
             let cur_clone_before = cur.clone();
             let tmp = discrepancy / discrepancy_m;
-            cur.resize(l + prev.len(), GF(0));
-            for (ci, pj) in cur[l..].iter_mut().zip(prev.iter()) {
+            cur.resize(checked_add(l, prev.len())?, GF(0));
+            let cur_len = cur.len();
+            for (ci, pj) in values_mut(&mut cur, l, cur_len)?
+                .iter_mut()
+                .zip(prev.iter())
+            {
                 *ci -= tmp * *pj;
             }
             len_lfsr = k + 1 - len_lfsr;
@@ -381,7 +635,12 @@ fn find_inv_error_locations_bm(syn: &[GF]) -> Result<Vec<GF>, ErrorDecodingError
         }
     }
 
-    if cur.len() - 1 > syn.len() / 2 {
+    if cur
+        .len()
+        .checked_sub(1)
+        .ok_or(ErrorDecodingError::Malfunction)?
+        > syn.len() / 2
+    {
         Err(ErrorDecodingError::TooManyErrors)
     } else {
         cur.reverse();
@@ -398,10 +657,12 @@ fn find_inv_error_locations_lu(syndomes: &[GF]) -> Result<Vec<GF>, ErrorDecoding
     // step 1: find the error locator polynomial
 
     // build syndrome matrix
-    let mut matrix = vec![GF(0); v * v]; // row-major order
+    let mut matrix = vec![GF(0); checked_mul(v, v)?]; // row-major order
     for i in 0..v {
         for j in 0..v {
-            matrix[i * v + j] = syndomes[i + j];
+            let matrix_index = checked_add(checked_mul(i, v)?, j)?;
+            let syndrome_index = checked_add(i, j)?;
+            set_value(&mut matrix, matrix_index, value(syndomes, syndrome_index)?)?;
         }
     }
 
@@ -409,9 +670,12 @@ fn find_inv_error_locations_lu(syndomes: &[GF]) -> Result<Vec<GF>, ErrorDecoding
     let mut coeff = vec![];
     for vi in (1..=v).rev() {
         let mut m = matrix.clone();
-        let mut b: Vec<GF> = syndomes[vi..2 * vi].into();
-        debug_assert_eq!(b.len(), vi);
-        if super::solve(&mut m, &mut b[..vi], v) {
+        let end = checked_mul(2, vi)?;
+        let mut b: Vec<GF> = values(syndomes, vi, end)?.into();
+        if b.len() != vi {
+            return Err(ErrorDecodingError::Malfunction);
+        }
+        if super::solve(&mut m, &mut b, v) {
             b.truncate(vi);
             coeff = b;
             break;
@@ -434,14 +698,25 @@ fn find_inv_error_locations_lu(syndomes: &[GF]) -> Result<Vec<GF>, ErrorDecoding
 /// - `lambda` is the list of coefficients for the error locator polynomial (starting with highest)
 /// - `syn` are the syndromes
 #[allow(unused)]
-fn find_error_values_forney(inv_x_locs: &mut [GF], lambda: &[GF], syn: &mut [GF]) {
+fn find_error_values_forney(
+    inv_x_locs: &mut [GF],
+    lambda: &[GF],
+    syn: &mut [GF],
+) -> Result<(), ErrorDecodingError> {
     let n = syn.len();
-    // compute Lambda(x) * S(x) mod x^n
+    // Lambda(x) * S(x) mod x^n değerini hesapla.
     let mut omega = vec![GF(0); n];
     for (i, si) in syn.iter().copied().enumerate() {
-        // si is coefficient for x with power i
-        for (j, lj) in lambda.iter().rev().take(n - i).copied().enumerate() {
-            omega[n - 1 - (j + i)] += lj * si;
+        // si, i kuvvetli x teriminin katsayısıdır.
+        let remaining = n.checked_sub(i).ok_or(ErrorDecodingError::Malfunction)?;
+        for (j, lj) in lambda.iter().rev().take(remaining).copied().enumerate() {
+            let offset = checked_add(j, i)?;
+            let index = n
+                .checked_sub(1)
+                .and_then(|value| value.checked_sub(offset))
+                .ok_or(ErrorDecodingError::Malfunction)?;
+            let updated = value(&omega, index)? + lj * si;
+            set_value(&mut omega, index, updated)?;
         }
     }
 
@@ -452,12 +727,19 @@ fn find_error_values_forney(inv_x_locs: &mut [GF], lambda: &[GF], syn: &mut [GF]
         }
 
         let mut lambda_der_x = GF(0);
-        for (k, lk) in lambda[..lambda.len() - 1].iter().copied().enumerate() {
+        let lambda_end = lambda
+            .len()
+            .checked_sub(1)
+            .ok_or(ErrorDecodingError::Malfunction)?;
+        for (k, lk) in values(lambda, 0, lambda_end)?.iter().copied().enumerate() {
             // notice that lk is multiplied with usize, this is NOT multiplication
             // in GF, see Mul<usize> implementation for GF.
             lambda_der_x = lambda_der_x * x_inv + lk * (lambda.len() - k - 1);
         }
 
+        if lambda_der_x == GF(0) {
+            return Err(ErrorDecodingError::Malfunction);
+        }
         *out = -omega_x / lambda_der_x;
     }
 
@@ -465,19 +747,23 @@ fn find_error_values_forney(inv_x_locs: &mut [GF], lambda: &[GF], syn: &mut [GF]
     for z in inv_x_locs.iter_mut() {
         // z is never 0 because the constant coefficient in coeff is 1,
         // so 0 is not a zero for polynomial
+        if *z == GF(0) {
+            return Err(ErrorDecodingError::Malfunction);
+        }
         *z = GF(1) / *z;
     }
+    Ok(())
 }
 
 #[test]
-fn solve_vandermonde_diag() {
+fn solve_vandermonde_diag() -> Result<(), ErrorDecodingError> {
     let mut x = [GF(28), GF(181), GF(59), GF(129), GF(189)];
     for tmp in x.iter_mut() {
         *tmp = GF(1) / *tmp;
     }
     let mut rhs = [GF(66), GF(27), GF(189), GF(255), GF(206)];
     let mut y1 = rhs;
-    find_error_values_bp(&mut x[..], &[], &mut y1[..]);
+    find_error_values_bp(&mut x[..], &[], &mut y1[..])?;
 
     let mut mat = [
         GF(28),
@@ -509,93 +795,112 @@ fn solve_vandermonde_diag() {
     super::solve(&mut mat, &mut rhs, x.len());
 
     assert_eq!(&rhs[..], &y1);
+    Ok(())
+}
+
+#[cfg(test)]
+fn set_test_codeword(
+    codewords: &mut [u8],
+    index: usize,
+    value: u8,
+) -> Result<(), ErrorDecodingError> {
+    let codeword = codewords
+        .get_mut(index)
+        .ok_or(ErrorDecodingError::Malfunction)?;
+    *codeword = value;
+    Ok(())
 }
 
 #[test]
-fn test_recovery() {
+fn test_recovery() -> Result<(), Box<dyn std::error::Error>> {
     let mut data = vec![1, 2, 3];
-    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square10);
+    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square10)?;
     data.extend_from_slice(&ecc);
     assert_eq!(data.len(), 3 + 5);
     let mut received = data.clone();
-    // make two wrong
-    received[0] = 230;
-    received[3 + 5 - 1] = 32;
-    decode(&mut received, SymbolSize::Square10).unwrap();
+    // İki codeword'ü bozar.
+    set_test_codeword(&mut received, 0, 230)?;
+    set_test_codeword(&mut received, 7, 32)?;
+    decode(&mut received, SymbolSize::Square10)?;
     assert_eq!(&data, &received);
+    Ok(())
 }
 
 #[test]
-fn test_recovery1() {
+fn test_recovery1() -> Result<(), Box<dyn std::error::Error>> {
     let mut data = vec![
         255, 255, 255, 72, 52, 38, 52, 52, 52, 52, 52, 52, 52, 52, 52, 72, 0, 0, 72, 0, 0, 10,
     ];
-    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20);
+    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20)?;
     data.extend_from_slice(&ecc);
     let mut received = data.clone();
-    received[0] = 52;
-    received[8] = 144;
-    decode(&mut received, SymbolSize::Square20).unwrap();
+    set_test_codeword(&mut received, 0, 52)?;
+    set_test_codeword(&mut received, 8, 144)?;
+    decode(&mut received, SymbolSize::Square20)?;
     assert_eq!(&data, &received);
+    Ok(())
 }
 
 #[test]
-fn test_recovery2() {
+fn test_recovery2() -> Result<(), Box<dyn std::error::Error>> {
     let mut data = vec![
         144, 144, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
         255, 255, 255, 255,
     ];
-    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20);
+    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20)?;
     data.extend_from_slice(&ecc);
     let mut received = data.clone();
-    received[1] = 32;
-    received[0] = 0;
-    received[12] = 0;
-    received[16] = 144;
-    decode(&mut received, SymbolSize::Square20).unwrap();
+    set_test_codeword(&mut received, 1, 32)?;
+    set_test_codeword(&mut received, 0, 0)?;
+    set_test_codeword(&mut received, 12, 0)?;
+    set_test_codeword(&mut received, 16, 144)?;
+    decode(&mut received, SymbolSize::Square20)?;
     assert_eq!(&data, &received);
+    Ok(())
 }
 
 #[test]
-fn test_recovery3() {
+fn test_recovery3() -> Result<(), Box<dyn std::error::Error>> {
     let mut data = vec![
         255, 23, 189, 54, 189, 189, 189, 189, 255, 255, 255, 255, 255, 255, 255, 67, 4, 0, 255,
         189, 48, 37,
     ];
-    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20);
+    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20)?;
     data.extend_from_slice(&ecc);
     let mut received = data.clone();
-    received[0] = 247;
-    received[1] = 49;
-    received[5] = 255;
-    received[6] = 0;
-    received[8] = 49;
-    received[10] = 0;
-    received[12] = 65;
-    received[15] = 177;
-    received[16] = 32;
-    decode(&mut received, SymbolSize::Square20).unwrap();
+    set_test_codeword(&mut received, 0, 247)?;
+    set_test_codeword(&mut received, 1, 49)?;
+    set_test_codeword(&mut received, 5, 255)?;
+    set_test_codeword(&mut received, 6, 0)?;
+    set_test_codeword(&mut received, 8, 49)?;
+    set_test_codeword(&mut received, 10, 0)?;
+    set_test_codeword(&mut received, 12, 65)?;
+    set_test_codeword(&mut received, 15, 177)?;
+    set_test_codeword(&mut received, 16, 32)?;
+    decode(&mut received, SymbolSize::Square20)?;
     assert_eq!(&data, &received);
+    Ok(())
 }
 
 #[test]
-fn test_recovery4() {
+fn test_recovery4() -> Result<(), Box<dyn std::error::Error>> {
     let mut data = vec![
         49, 95, 49, 44, 49, 49, 0, 0, 0, 32, 255, 247, 255, 254, 189, 189, 189, 189, 189, 189, 189,
         189,
     ];
-    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20);
+    let ecc = crate::errorcode::encode_error(&data, SymbolSize::Square20)?;
     data.extend_from_slice(&ecc);
     let mut received = data.clone();
-    received[1] = 49;
-    received[0] = 44;
-    received[13] = 49;
-    received[10] = 0;
-    received[8] = 101;
-    received[15] = 54;
-    received[6] = 206;
-    received[21] = 191;
-    received[5] = 50;
-    decode(&mut received, SymbolSize::Square20).unwrap();
+    set_test_codeword(&mut received, 1, 49)?;
+    set_test_codeword(&mut received, 0, 44)?;
+    set_test_codeword(&mut received, 13, 49)?;
+    set_test_codeword(&mut received, 10, 0)?;
+    set_test_codeword(&mut received, 8, 101)?;
+    set_test_codeword(&mut received, 15, 54)?;
+    set_test_codeword(&mut received, 6, 206)?;
+    set_test_codeword(&mut received, 21, 191)?;
+    set_test_codeword(&mut received, 5, 50)?;
+    decode(&mut received, SymbolSize::Square20)?;
     assert_eq!(&data, &received);
+    Ok(())
 }

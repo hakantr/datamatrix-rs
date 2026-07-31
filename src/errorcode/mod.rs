@@ -44,6 +44,33 @@ use galois::GF;
 pub use decoding::ErrorDecodingError;
 pub use decoding::decode as decode_error;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorEncodingError {
+    DataSize { expected: usize, actual: usize },
+    MissingGenerator { error_codewords: usize },
+    InternalError(&'static str),
+}
+
+impl core::fmt::Display for ErrorEncodingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DataSize { expected, actual } => write!(
+                f,
+                "Reed–Solomon kodlaması {expected} data codeword bekliyordu, {actual} verildi"
+            ),
+            Self::MissingGenerator { error_codewords } => write!(
+                f,
+                "{error_codewords} error codeword için generator polynomial tanımlı değil"
+            ),
+            Self::InternalError(message) => {
+                write!(f, "Reed–Solomon kodlayıcı iç hatası: {message}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for ErrorEncodingError {}
+
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
@@ -173,11 +200,11 @@ const GENERATOR_POLYNOMIALS: [&[u8]; 25] = [
     ],
 ];
 
-fn generator(len: usize) -> &'static [u8] {
+fn generator(len: usize) -> Option<&'static [u8]> {
     GENERATOR_POLYNOMIALS
         .iter()
         .find(|p| p.len() - 1 == len)
-        .expect("no generator polynomical defined for this symbol size, this is a bug")
+        .copied()
 }
 
 /// Compute the Reed-Solomon code used by Data Matrix for error correction.
@@ -186,15 +213,20 @@ fn generator(len: usize) -> &'static [u8] {
 /// interleaved blocks. For each block an error code is computed.
 /// The resulting blocks of error codes are returned interleaved.
 ///
-/// # Panics
-///
-/// Panics if the size of `data` dooes not match the number of data
-/// codewords needed for the symbol size.
-pub fn encode_error(data: &[u8], size: SymbolSize) -> Vec<u8> {
+/// `data` uzunluğu symbol size için gereken data codeword sayısıyla eşleşmezse
+/// [ErrorEncodingError::DataSize] döndürür.
+pub fn encode_error(data: &[u8], size: SymbolSize) -> Result<Vec<u8>, ErrorEncodingError> {
     let setup = size.block_setup();
     let num_codewords = size.num_data_codewords();
-    assert!(data.len() == num_codewords);
-    let r#gen = generator(setup.num_ecc_per_block);
+    if data.len() != num_codewords {
+        return Err(ErrorEncodingError::DataSize {
+            expected: num_codewords,
+            actual: data.len(),
+        });
+    }
+    let r#gen = generator(setup.num_ecc_per_block).ok_or(ErrorEncodingError::MissingGenerator {
+        error_codewords: setup.num_ecc_per_block,
+    })?;
     // For bigger symbol sizes the data is split up into interleaved blocks
     // for which an error code is computed individually. we store
     // the error blocks interleaved in the returned result.
@@ -203,24 +235,33 @@ pub fn encode_error(data: &[u8], size: SymbolSize) -> Vec<u8> {
     let mut full_ecc = vec![0; setup.num_ecc_per_block * setup.num_ecc_blocks];
     for block in 0..setup.num_ecc_blocks {
         ecc.fill(0);
-        let strided_data_input = (block..data.len()).step_by(stride).map(|i| data[i]);
-        ecc_block(strided_data_input, r#gen, &mut ecc);
+        let strided_data_input = data.iter().copied().skip(block).step_by(stride);
+        ecc_block(strided_data_input, r#gen, &mut ecc)?;
 
-        // copy block interleaved to result vector
+        // Error block'u sonuç vektörüne interleaved biçimde kopyala.
+        let block_ecc =
+            ecc.get(..setup.num_ecc_per_block)
+                .ok_or(ErrorEncodingError::InternalError(
+                    "hesaplanan error block beklenenden kısa",
+                ))?;
         for (result, ecc_i) in full_ecc
             .iter_mut()
             .skip(block)
             .step_by(stride)
-            .zip(&ecc[..setup.num_ecc_per_block])
+            .zip(block_ecc)
         {
             debug_assert_eq!(*result, 0);
             *result = *ecc_i;
         }
     }
-    full_ecc
+    Ok(full_ecc)
 }
 
-fn ecc_block<T: Iterator<Item = u8>>(data: T, g: &[u8], ecc: &mut [u8]) {
+fn ecc_block<T: Iterator<Item = u8>>(
+    data: T,
+    g: &[u8],
+    ecc: &mut [u8],
+) -> Result<(), ErrorEncodingError> {
     // Let d be the data polynomical (n coefficients) and g the generating polynomical
     // with k + 1 coefficients.
     //
@@ -237,21 +278,55 @@ fn ecc_block<T: Iterator<Item = u8>>(data: T, g: &[u8], ecc: &mut [u8]) {
     // the last k the error code, i.e., the coefficient of r. The algorithm
     // is modified to not compute q and store r directly in ecc. The ecc
     // array is used to store intermediate results.
-    let ecc_len = g.len() - 1;
+    let ecc_len = g
+        .len()
+        .checked_sub(1)
+        .ok_or(ErrorEncodingError::InternalError(
+            "generator polynomial boş",
+        ))?;
     for a in data {
-        let k = GF(ecc[0]) + GF(a);
+        let first = ecc
+            .first()
+            .copied()
+            .ok_or(ErrorEncodingError::InternalError(
+                "error codeword arabelleği boş",
+            ))?;
+        let k = GF(first) + GF(a);
         for j in 0..ecc_len {
-            ecc[j] = (GF(ecc[j + 1]) + k * GF(g[j + 1])).into();
+            let next_index = j.checked_add(1).ok_or(ErrorEncodingError::InternalError(
+                "error codeword konumu hesaplanırken taşma oluştu",
+            ))?;
+            let next = ecc
+                .get(next_index)
+                .copied()
+                .ok_or(ErrorEncodingError::InternalError(
+                    "sonraki error codeword bulunamadı",
+                ))?;
+            let coefficient =
+                g.get(next_index)
+                    .copied()
+                    .ok_or(ErrorEncodingError::InternalError(
+                        "generator polynomial katsayısı bulunamadı",
+                    ))?;
+            let value = ecc.get_mut(j).ok_or(ErrorEncodingError::InternalError(
+                "yazılacak error codeword konumu bulunamadı",
+            ))?;
+            *value = (GF(next) + k * GF(coefficient)).into();
         }
     }
+    Ok(())
 }
 
 #[test]
-fn ecc_block_1() {
-    // The test case was computed with the Python script
+fn ecc_block_1() -> Result<(), ErrorEncodingError> {
+    // Test vakası Python script'i ile hesaplandı.
     let data = [23, 40, 11];
-    let g = GENERATOR_POLYNOMIALS[0];
+    let generator = GENERATOR_POLYNOMIALS
+        .first()
+        .copied()
+        .ok_or(ErrorEncodingError::MissingGenerator { error_codewords: 5 })?;
     let mut ecc = vec![0; 5 + 1];
-    ecc_block(data.iter().cloned(), g, &mut ecc);
-    assert_eq!(ecc[..5], vec![255, 207, 37, 244, 81]);
+    ecc_block(data.iter().cloned(), generator, &mut ecc)?;
+    assert_eq!(ecc.get(..5), Some([255, 207, 37, 244, 81].as_slice()));
+    Ok(())
 }

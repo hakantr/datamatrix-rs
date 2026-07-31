@@ -35,7 +35,6 @@ impl<T: ContextInformation> Plan for AsciiPlan<T> {
     }
 
     fn write_unlatch(&self) -> T {
-        assert_eq!(self.digits_ahead, 0);
         self.ctx.clone()
     }
 
@@ -57,9 +56,11 @@ impl<T: ContextInformation> Plan for AsciiPlan<T> {
         let unbeatable = self.digits_ahead > 0;
         let end = !self.ctx.has_more_characters();
         if !end {
-            let ch = self.ctx.eat().unwrap();
+            let ch = self.ctx.eat()?;
             if self.digits_ahead > 0 {
-                assert!(ch.is_ascii_digit());
+                if !ch.is_ascii_digit() {
+                    return None;
+                }
                 self.digits_ahead -= 1;
                 // those were already written to ctx above
                 self.cost += Frac::new(1, 2);

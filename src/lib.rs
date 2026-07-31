@@ -8,8 +8,8 @@
 //!     b"Hello, World!",
 //!     SymbolList::default(),
 //! )?;
-//! print!("{}", code.bitmap().unicode());
-//! # Ok::<(), datamatrix::data::DataEncodingError>(())
+//! print!("{}", code.bitmap()?.unicode());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! This toy example will print a Data Matrix using Unicode block characters.
@@ -55,13 +55,14 @@
 //! ```rust
 //! # use datamatrix::{SymbolSize, placement::MatrixMap, DataMatrix};
 //! # let codewords1 = [73, 239, 116, 130, 175, 52, 19, 40, 179, 242, 106, 105, 97, 98, 35, 165, 137, 102, 203, 106, 207, 48, 186, 66];
-//! # let map = MatrixMap::new_with_codewords(&codewords1, SymbolSize::Square16);
-//! # let pixels: Vec<bool> = map.bitmap().bits().into();
+//! # let map = MatrixMap::new_with_codewords(&codewords1, SymbolSize::Square16)?;
+//! # let bitmap = map.bitmap()?;
+//! # let pixels: Vec<bool> = bitmap.bits().into();
 //! // let pixels: Vec<bool> = …
 //! let width = 16;
 //! let data = DataMatrix::decode(&pixels, width)?;
 //! assert_eq!(&data, b"Hello, World!");
-//! # Ok::<(), datamatrix::DecodingError>(())
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # Current limitations
@@ -91,6 +92,8 @@ pub mod data;
 pub use encodation::EncodationType;
 pub use symbol_size::{SymbolList, SymbolSize};
 
+#[cfg(test)]
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use flagset::FlagSet;
 
@@ -123,6 +126,18 @@ pub enum DecodingError {
     DataDecoding(decodation::DataDecodingError),
 }
 
+impl core::fmt::Display for DecodingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::PixelConversion(error) => write!(f, "bitmap çözümlenemedi: {error}"),
+            Self::ErrorCorrection(error) => write!(f, "error correction başarısız: {error}"),
+            Self::DataDecoding(error) => write!(f, "Data Matrix verisi çözümlenemedi: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for DecodingError {}
+
 impl DataMatrix {
     /// Decode a Data Matrix from its pixels representation.
     ///
@@ -139,10 +154,17 @@ impl DataMatrix {
     pub fn decode(pixels: &[bool], width: usize) -> Result<Vec<u8>, DecodingError> {
         let (matrix_map, size) =
             MatrixMap::try_from_bits(pixels, width).map_err(DecodingError::PixelConversion)?;
-        let mut codewords = matrix_map.codewords();
+        let mut codewords = matrix_map
+            .codewords()
+            .map_err(DecodingError::PixelConversion)?;
         errorcode::decode_error(&mut codewords, size).map_err(DecodingError::ErrorCorrection)?;
-        decodation::decode_data(&codewords[..size.num_data_codewords()])
-            .map_err(DecodingError::DataDecoding)
+        let data_codewords =
+            codewords
+                .get(..size.num_data_codewords())
+                .ok_or(DecodingError::ErrorCorrection(
+                    errorcode::ErrorDecodingError::Malfunction,
+                ))?;
+        decodation::decode_data(data_codewords).map_err(DecodingError::DataDecoding)
     }
 
     /// Get the data in encoded form.
@@ -157,12 +179,14 @@ impl DataMatrix {
     ///
     /// This is a prefix of the codewords returned by [codewords()](Self::codewords).
     pub fn data_codewords(&self) -> &[u8] {
-        &self.codewords[..self.num_data_codewords]
+        self.codewords
+            .get(..self.num_data_codewords)
+            .unwrap_or_default()
     }
 
     /// Create an abstract bitmap representing the Data Matrix.
-    pub fn bitmap(&self) -> Bitmap<bool> {
-        MatrixMap::new_with_codewords(&self.codewords, self.size).bitmap()
+    pub fn bitmap(&self) -> Result<Bitmap<bool>, placement::BitmapConversionError> {
+        MatrixMap::new_with_codewords(&self.codewords, self.size)?.bitmap()
     }
 
     /// Encode data as a Data Matrix (ECC200).
@@ -202,8 +226,8 @@ impl DataMatrix {
     /// // use "\x1D" (ASCII GS control sequence) to concatenate element strings
     /// let data = b"01034531200000111719112510ABCD1234\x1D2110";
     /// let data_matrix = DataMatrix::encode_gs1(data, SymbolList::default())?;
-    /// let bitmap = data_matrix.bitmap();
-    /// # Ok::<(), DataEncodingError>(())
+    /// let bitmap = data_matrix.bitmap()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn encode_gs1<I: Into<SymbolList>>(
         data: &[u8],
@@ -321,7 +345,8 @@ impl DataMatrixBuilder {
             self.use_macros,
             self.fnc1_start,
         )?;
-        let ecc = errorcode::encode_error(&codewords, size);
+        let ecc = errorcode::encode_error(&codewords, size)
+            .map_err(DataEncodingError::ErrorCorrection)?;
         let num_data_codewords = codewords.len();
         codewords.extend_from_slice(&ecc);
         Ok(DataMatrix {
@@ -339,30 +364,32 @@ impl Default for DataMatrixBuilder {
 }
 
 #[test]
-fn utf8_eci_test() {
+fn utf8_eci_test() -> Result<(), Box<dyn std::error::Error>> {
     let data = "🥸";
-    let code = DataMatrix::encode_str(data, SymbolList::default()).unwrap();
-    let decoded = data::decode_str(code.data_codewords()).unwrap();
+    let code = DataMatrix::encode_str(data, SymbolList::default())?;
+    let decoded = data::decode_str(code.data_codewords())?;
     assert_eq!(decoded, data);
+    Ok(())
 }
 
 #[test]
-fn test_tile_placement_forth_and_back() {
+fn test_tile_placement_forth_and_back() -> Result<(), Box<dyn std::error::Error>> {
     let mut rnd_data = test::random_data();
     for size in SymbolList::all() {
         let data = rnd_data(size.num_codewords());
-        let map = MatrixMap::new_with_codewords(&data, size);
-        assert_eq!(map.codewords(), data);
-        let bitmap = map.bitmap();
-        let (matrix_map, _size) = MatrixMap::try_from_bits(bitmap.bits(), bitmap.width()).unwrap();
-        assert_eq!(matrix_map.codewords(), data);
+        let map = MatrixMap::new_with_codewords(&data, size)?;
+        assert_eq!(map.codewords()?, data);
+        let bitmap = map.bitmap()?;
+        let (matrix_map, _size) = MatrixMap::try_from_bits(bitmap.bits(), bitmap.width())?;
+        assert_eq!(matrix_map.codewords()?, data);
     }
+    Ok(())
 }
 
 #[test]
-fn test_macro_str() {
+fn test_macro_str() -> Result<(), Box<dyn std::error::Error>> {
     let data = "[)>\x1E05\x1D🤘\x1E\x04";
-    let map = DataMatrix::encode_str(data, SymbolList::default()).unwrap();
+    let map = DataMatrix::encode_str(data, SymbolList::default())?;
     let codewords = map.data_codewords();
     assert_eq!(
         codewords,
@@ -380,8 +407,9 @@ fn test_macro_str() {
             129,
         ]
     );
-    let out = data::decode_str(codewords).unwrap();
+    let out = data::decode_str(codewords)?;
     assert_eq!(data, out);
+    Ok(())
 }
 
 #[test]
@@ -399,17 +427,20 @@ mod test {
     use alloc::vec::Vec;
 
     /// Simple LCG random generator for test data generation
-    pub fn random_maps() -> impl FnMut(SymbolSize) -> MatrixMap<bool> {
+    pub fn random_maps()
+    -> impl FnMut(SymbolSize) -> Result<MatrixMap<bool>, crate::placement::BitmapConversionError>
+    {
         let mut rnd = random_bytes();
         move |size| {
-            let mut map = MatrixMap::new(size);
+            let mut map = MatrixMap::new(size)?;
             map.traverse_mut(|_, bits| {
                 for bit in bits {
                     *bit = rnd() > 127;
                 }
-            });
-            map.write_padding();
-            map
+                Ok(())
+            })?;
+            map.write_padding()?;
+            Ok(map)
         }
     }
 
@@ -437,12 +468,13 @@ mod test {
 }
 
 #[test]
-fn test_simple_gs1() {
+fn test_simple_gs1() -> Result<(), Box<dyn std::error::Error>> {
     let data = b"01034531200000111719112510ABCD1234\x1D2110";
-    let result = DataMatrix::encode_gs1(data, SymbolList::default()).unwrap();
+    let result = DataMatrix::encode_gs1(data, SymbolList::default())?;
     let codewords = result.codewords();
-    assert_eq!(codewords[0], crate::encodation::ascii::FNC1);
+    assert_eq!(codewords.first(), Some(&crate::encodation::ascii::FNC1));
 
-    let decoded = data::decode_data(result.data_codewords()).unwrap();
+    let decoded = data::decode_data(result.data_codewords())?;
     assert_eq!(decoded, data);
+    Ok(())
 }

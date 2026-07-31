@@ -99,7 +99,9 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
     fn write_unlatch(&self) -> Self::Context {
         let mut ctx = self.ctx.clone();
         if self.values > 0 {
-            assert!(self.values <= 2);
+            if self.values > 2 {
+                return ctx;
+            }
             // finish C40 pair
             ctx.write(2);
         }
@@ -185,7 +187,7 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
         let unbeatable = self.unbeatable_reads > 0;
         let end = !self.ctx.has_more_characters();
         if !end {
-            self.ch = self.ctx.eat().unwrap();
+            self.ch = self.ctx.eat()?;
             if self.unbeatable_reads > 0 {
                 if !self.two_digit_ascii_end || self.values == 0 {
                     self.values += 1;

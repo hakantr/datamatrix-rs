@@ -5,7 +5,7 @@ use datamatrix::{
     placement::{Bitmap, PathSegment},
 };
 
-fn bitmap_to_eps(bitmap: Bitmap<bool>) -> String {
+fn bitmap_to_eps(bitmap: Bitmap<bool>) -> Result<String, Box<dyn std::error::Error>> {
     let w = bitmap.width();
     let h = bitmap.height();
     let mut eps: String = format!(
@@ -27,22 +27,21 @@ fn bitmap_to_eps(bitmap: Bitmap<bool>) -> String {
         h + 2,
         h + 1,
     );
-    for part in bitmap.path() {
+    for part in bitmap.path()? {
         match part {
             PathSegment::Horizontal(n) => writeln!(eps, "{} h", n),
             PathSegment::Vertical(n) => writeln!(eps, "{} v", -n),
             PathSegment::Move(dx, dy) => writeln!(eps, "{} {} m", dx, -dy),
             PathSegment::Close => writeln!(eps, "z"),
-        }
-        .unwrap();
+        }?;
     }
     eps.push_str("eofill\ngrestore");
-    eps
+    Ok(eps)
 }
 
-fn main() {
-    let bitmap = DataMatrix::encode(b"Hello, EPS!", SymbolList::default().enforce_rectangular())
-        .unwrap()
-        .bitmap();
-    println!("{}", bitmap_to_eps(bitmap));
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bitmap = DataMatrix::encode(b"Hello, EPS!", SymbolList::default().enforce_rectangular())?
+        .bitmap()?;
+    println!("{}", bitmap_to_eps(bitmap)?);
+    Ok(())
 }

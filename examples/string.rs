@@ -1,8 +1,9 @@
 use datamatrix::{DataMatrix, SymbolList};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text = "Doppelgänger";
-    // call `encode_str` instead of `encode` to use latin1 encoding in this case
-    let enc = DataMatrix::encode_str(text, SymbolList::default().enforce_square()).unwrap();
-    print!("{}", enc.bitmap().unicode());
+    // Bu örnekte Latin-1 encoding kullanmak için `encode` yerine `encode_str` çağrılır.
+    let encoded = DataMatrix::encode_str(text, SymbolList::default().enforce_square())?;
+    print!("{}", encoded.bitmap()?.unicode());
+    Ok(())
 }

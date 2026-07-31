@@ -1,11 +1,11 @@
 use alloc::{vec, vec::Vec};
-use core::cell::RefCell;
+use core::cell::Cell;
 
 #[cfg(test)]
 use pretty_assertions::assert_eq;
 
-use super::Bitmap;
-type N = i16;
+use super::{Bitmap, BitmapConversionError};
+type N = isize;
 
 /// Segment of a vector graphics path.
 ///
@@ -24,15 +24,15 @@ pub enum PathSegment {
     ///
     /// A list of path segments returned by [path()](Bitmap::path) does _not_
     /// start with this. The first path is assumed to start implicitly.
-    Move(i16, i16),
+    Move(isize, isize),
     /// A horizontal draw, relative distance.
     ///
     /// This is like a `h` entry in a SVG path.
-    Horizontal(i16),
+    Horizontal(isize),
     /// A vertical draw, relative distance.
     ///
     /// This is like a `v` entry in a SVG path.
-    Vertical(i16),
+    Vertical(isize),
     /// Close the current (sub)path. Can occur multiple times.
     ///
     /// This is like a `z` entry in a SVG path.
@@ -69,17 +69,17 @@ impl Bitmap<bool> {
     ///
     /// The outline is modeled as a graph which is then decomposed into
     /// Eulerian circuits.
-    pub fn path(&self) -> Vec<PathSegment> {
-        let mut graph = bits_to_edge_graph(&self.bits, self.width(), self.height());
+    pub fn path(&self) -> Result<Vec<PathSegment>, BitmapConversionError> {
+        let mut graph = bits_to_edge_graph(&self.bits, self.width(), self.height())?;
         let mut pos = if let Some(pos) = graph.edge_left() {
             pos
         } else {
-            return vec![];
+            return Ok(vec![]);
         };
         let mut elements = Vec::new();
 
         let mut alternatives = Vec::new();
-        let mut insert = 0;
+        let mut insert: usize = 0;
         // loop over the eulerian walks in the graph (composed of multiple in general)
         loop {
             // complete an Eulerian tour, Hierholzer's algorithm
@@ -87,10 +87,16 @@ impl Bitmap<bool> {
                 let mut local_loop = Vec::new();
                 let insert_pos = insert;
 
-                graph.remove_edge(&pos);
+                if !graph.remove_edge(&pos) {
+                    return Err(BitmapConversionError::InternalError(
+                        "Eulerian path başlangıç kenarı bulunamadı",
+                    ));
+                }
                 let start = pos.start_node();
                 local_loop.push(MicroStep::Step(pos.end_node()));
-                insert += 1;
+                insert = insert
+                    .checked_add(1)
+                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
 
                 // walk until we find start node again
                 loop {
@@ -98,14 +104,27 @@ impl Bitmap<bool> {
                     if had_alternatives {
                         alternatives.push((insert, pos));
                     }
-                    pos = new_pos.expect("must exist because `pos` was valid");
-                    graph.remove_edge(&pos);
+                    pos = new_pos.ok_or(BitmapConversionError::InternalError(
+                        "Eulerian path geçerli bir sonraki kenar bulamadı",
+                    ))?;
+                    if !graph.remove_edge(&pos) {
+                        return Err(BitmapConversionError::InternalError(
+                            "Eulerian path üzerindeki kenar kaldırılamadı",
+                        ));
+                    }
                     let end = pos.end_node();
                     local_loop.push(MicroStep::Step(end));
                     if end == start {
                         break;
                     }
-                    insert += 1;
+                    insert = insert
+                        .checked_add(1)
+                        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+                }
+                if insert_pos > elements.len() {
+                    return Err(BitmapConversionError::InternalError(
+                        "Eulerian path ekleme konumu çıktı sınırlarının dışında",
+                    ));
                 }
                 elements.splice(insert_pos..insert_pos, local_loop.drain(..));
 
@@ -133,7 +152,9 @@ impl Bitmap<bool> {
     }
 }
 
-fn compress_path(micro_steps: impl Iterator<Item = MicroStep>) -> Vec<PathSegment> {
+fn compress_path(
+    micro_steps: impl Iterator<Item = MicroStep>,
+) -> Result<Vec<PathSegment>, BitmapConversionError> {
     let mut steps = Vec::new();
     let mut pos = (0, 0);
 
@@ -145,10 +166,12 @@ fn compress_path(micro_steps: impl Iterator<Item = MicroStep>) -> Vec<PathSegmen
                 match step_wip {
                     // check if we can combine step with step_wip
                     Some(PathSegment::Horizontal(m)) if i == pos.0 => {
-                        step_wip = Some(PathSegment::Horizontal(m + (j - pos.1)));
+                        let distance = checked_sub(j, pos.1)?;
+                        step_wip = Some(PathSegment::Horizontal(checked_add(m, distance)?));
                     }
                     Some(PathSegment::Vertical(m)) if j == pos.1 => {
-                        step_wip = Some(PathSegment::Vertical(m + (i - pos.0)));
+                        let distance = checked_sub(i, pos.0)?;
+                        step_wip = Some(PathSegment::Vertical(checked_add(m, distance)?));
                     }
                     // start new step_wip
                     mut other => {
@@ -156,9 +179,9 @@ fn compress_path(micro_steps: impl Iterator<Item = MicroStep>) -> Vec<PathSegmen
                             steps.push(other);
                         }
                         if i == pos.0 {
-                            step_wip = Some(PathSegment::Horizontal(j - pos.1));
+                            step_wip = Some(PathSegment::Horizontal(checked_sub(j, pos.1)?));
                         } else {
-                            step_wip = Some(PathSegment::Vertical(i - pos.0));
+                            step_wip = Some(PathSegment::Vertical(checked_sub(i, pos.0)?));
                         }
                     }
                 }
@@ -168,13 +191,26 @@ fn compress_path(micro_steps: impl Iterator<Item = MicroStep>) -> Vec<PathSegmen
                 // drop content of step_wip, just add close
                 step_wip = None;
                 steps.push(PathSegment::Close);
-                steps.push(PathSegment::Move(j - pos.1, i - pos.0));
+                steps.push(PathSegment::Move(
+                    checked_sub(j, pos.1)?,
+                    checked_sub(i, pos.0)?,
+                ));
                 pos = (i, j);
             }
         }
     }
     steps.push(PathSegment::Close);
-    steps
+    Ok(steps)
+}
+
+fn checked_add(left: N, right: N) -> Result<N, BitmapConversionError> {
+    left.checked_add(right)
+        .ok_or(BitmapConversionError::ArithmeticOverflow)
+}
+
+fn checked_sub(left: N, right: N) -> Result<N, BitmapConversionError> {
+    left.checked_sub(right)
+        .ok_or(BitmapConversionError::ArithmeticOverflow)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -274,22 +310,46 @@ struct Graph {
     edges: Vec<Edge>,
     width: usize,
     height: usize,
-    edge_hint: RefCell<usize>,
+    edge_hint: Cell<usize>,
 }
 
 impl Graph {
     /// Check if the left edge of cell `(i, j)` is part of the graph.
     fn left(&self, i: N, j: N) -> bool {
-        self.has_cell(i, j) && { self.edges[i as usize * (self.width + 1) + j as usize].left }
+        self.edge(i, j).is_some_and(|edge| edge.left)
     }
 
     /// Check if the top edge of cell `(i, j)` is part of the graph.
     fn top(&self, i: N, j: N) -> bool {
-        self.has_cell(i, j) && { self.edges[i as usize * (self.width + 1) + j as usize].top }
+        self.edge(i, j).is_some_and(|edge| edge.top)
     }
 
     fn has_cell(&self, i: N, j: N) -> bool {
-        (0..=self.height as N).contains(&i) && (0..=self.width as N).contains(&j)
+        if i < 0 || j < 0 {
+            return false;
+        }
+        let Ok(i) = usize::try_from(i) else {
+            return false;
+        };
+        let Ok(j) = usize::try_from(j) else {
+            return false;
+        };
+        i <= self.height && j <= self.width
+    }
+
+    fn edge_index(&self, i: N, j: N) -> Option<usize> {
+        if !self.has_cell(i, j) {
+            return None;
+        }
+        let row = usize::try_from(i).ok()?;
+        let column = usize::try_from(j).ok()?;
+        let stride = self.width.checked_add(1)?;
+        row.checked_mul(stride)?.checked_add(column)
+    }
+
+    fn edge(&self, i: N, j: N) -> Option<&Edge> {
+        self.edge_index(i, j)
+            .and_then(|index| self.edges.get(index))
     }
 
     /// Check if there is any edge in the graph that could be reached from the position.
@@ -336,17 +396,21 @@ impl Graph {
     }
 
     fn remove_top(&mut self, i: N, j: N) -> bool {
-        self.has_cell(i, j) && {
-            let idx = i as usize * (self.width + 1) + j as usize;
-            core::mem::replace(&mut self.edges[idx].top, false)
-        }
+        let Some(index) = self.edge_index(i, j) else {
+            return false;
+        };
+        self.edges
+            .get_mut(index)
+            .is_some_and(|edge| core::mem::replace(&mut edge.top, false))
     }
 
     fn remove_left(&mut self, i: N, j: N) -> bool {
-        self.has_cell(i, j) && {
-            let idx = i as usize * (self.width + 1) + j as usize;
-            core::mem::replace(&mut self.edges[idx].left, false)
-        }
+        let Some(index) = self.edge_index(i, j) else {
+            return false;
+        };
+        self.edges
+            .get_mut(index)
+            .is_some_and(|edge| core::mem::replace(&mut edge.left, false))
     }
 
     fn remove_edge(&mut self, pos: &Position) -> bool {
@@ -360,13 +424,15 @@ impl Graph {
     ///
     /// If no edges are left `None` is returned.
     fn edge_left(&self) -> Option<Position> {
-        let hint = *self.edge_hint.borrow();
-        for (idx, edge) in self.edges[hint..].iter().enumerate() {
+        let hint = self.edge_hint.get();
+        let remaining = self.edges.get(hint..)?;
+        let stride = self.width.checked_add(1)?;
+        for (idx, edge) in remaining.iter().enumerate() {
             if edge.left || edge.top {
-                let idx = idx + hint;
-                let i = (idx / (self.width + 1)) as N;
-                let j = (idx % (self.width + 1)) as N;
-                self.edge_hint.replace_with(|_| idx);
+                let idx = idx.checked_add(hint)?;
+                let i = N::try_from(idx / stride).ok()?;
+                let j = N::try_from(idx % stride).ok()?;
+                self.edge_hint.set(idx);
                 return Some(Position {
                     i,
                     j,
@@ -378,68 +444,116 @@ impl Graph {
                 });
             }
         }
-        self.edge_hint.replace_with(|_| self.edges.len());
+        self.edge_hint.set(self.edges.len());
         None
     }
 }
 
-fn bits_to_edge_graph(bits: &[bool], width: usize, height: usize) -> Graph {
+fn bits_to_edge_graph(
+    bits: &[bool],
+    width: usize,
+    height: usize,
+) -> Result<Graph, BitmapConversionError> {
+    let expected_bits = width
+        .checked_mul(height)
+        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+    if bits.len() != expected_bits {
+        return Err(BitmapConversionError::DataSize);
+    }
+    let graph_width = width
+        .checked_add(1)
+        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+    let graph_height = height
+        .checked_add(1)
+        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+    N::try_from(graph_width).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+    N::try_from(graph_height).map_err(|_| BitmapConversionError::ArithmeticOverflow)?;
+    let edge_count = graph_width
+        .checked_mul(graph_height)
+        .ok_or(BitmapConversionError::ArithmeticOverflow)?;
     let mut graph = Graph {
         edges: vec![
             Edge {
                 left: false,
                 top: false
             };
-            (width + 1) * (height + 1)
+            edge_count
         ],
-        edge_hint: RefCell::new(0),
+        edge_hint: Cell::new(0),
         width,
         height,
     };
-
-    let _: N = (graph.width + 1).try_into().expect("width overflow");
-    let _: N = (graph.height + 1).try_into().expect("height overflow");
 
     let mut edge_hint = None;
 
     for i in 0..height {
         for j in 0..width {
-            let idx = i * width + j;
-            if !bits[idx] {
+            let idx = i
+                .checked_mul(width)
+                .and_then(|row| row.checked_add(j))
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+            if bits.get(idx).copied() != Some(true) {
                 continue;
             }
-            let cell = i * (width + 1) + j;
+            let cell = i
+                .checked_mul(graph_width)
+                .and_then(|row| row.checked_add(j))
+                .ok_or(BitmapConversionError::ArithmeticOverflow)?;
             edge_hint.get_or_insert(cell);
-            if j == 0 || !bits[idx - 1] {
+            if j == 0 || bits.get(idx - 1).copied() == Some(false) {
                 // left
-                graph.edges[cell].left = true;
+                set_edge(&mut graph.edges, cell, EdgeSide::Left)?;
             }
-            if i == 0 || !bits[idx - width] {
+            if i == 0 || bits.get(idx - width).copied() == Some(false) {
                 // top
-                graph.edges[cell].top = true;
+                set_edge(&mut graph.edges, cell, EdgeSide::Top)?;
             }
-            if j == width - 1 || !bits[idx + 1] {
+            if j == width - 1 || bits.get(idx + 1).copied() == Some(false) {
                 // right
-                graph.edges[cell + 1].left = true;
+                let right = cell
+                    .checked_add(1)
+                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+                set_edge(&mut graph.edges, right, EdgeSide::Left)?;
             }
-            if i == height - 1 || !bits[idx + width] {
+            if i == height - 1 || bits.get(idx + width).copied() == Some(false) {
                 // bottom
-                graph.edges[cell + (width + 1)].top = true;
+                let bottom = cell
+                    .checked_add(graph_width)
+                    .ok_or(BitmapConversionError::ArithmeticOverflow)?;
+                set_edge(&mut graph.edges, bottom, EdgeSide::Top)?;
             }
         }
     }
-    *graph.edge_hint.get_mut() = edge_hint.unwrap_or(graph.edges.len());
-    graph
+    graph.edge_hint.set(edge_hint.unwrap_or(graph.edges.len()));
+    Ok(graph)
+}
+
+enum EdgeSide {
+    Left,
+    Top,
+}
+
+fn set_edge(edges: &mut [Edge], index: usize, side: EdgeSide) -> Result<(), BitmapConversionError> {
+    let edge = edges
+        .get_mut(index)
+        .ok_or(BitmapConversionError::InternalError(
+            "path kenarı graph sınırlarının dışında",
+        ))?;
+    match side {
+        EdgeSide::Left => edge.left = true,
+        EdgeSide::Top => edge.top = true,
+    }
+    Ok(())
 }
 
 #[test]
-fn mini_2x2_one_euler() {
+fn mini_2x2_one_euler() -> Result<(), BitmapConversionError> {
     let bm = Bitmap {
         bits: vec![true, false, true, true],
         width: 2,
     };
     assert_eq!(
-        bits_to_edge_graph(&bm.bits, 2, 2),
+        bits_to_edge_graph(&bm.bits, 2, 2)?,
         Graph {
             edges: vec![
                 Edge {
@@ -479,13 +593,13 @@ fn mini_2x2_one_euler() {
                     top: false
                 },
             ],
-            edge_hint: RefCell::new(0),
+            edge_hint: Cell::new(0),
             width: 2,
             height: 2,
         }
     );
     assert_eq!(
-        bm.path(),
+        bm.path()?,
         vec![
             PathSegment::Horizontal(1),
             PathSegment::Vertical(1),
@@ -495,16 +609,17 @@ fn mini_2x2_one_euler() {
             PathSegment::Close,
         ],
     );
+    Ok(())
 }
 
 #[test]
-fn mini_2x3_one_euler() {
+fn mini_2x3_one_euler() -> Result<(), BitmapConversionError> {
     let bm = Bitmap {
         bits: vec![true, false, true, true, true, false],
         width: 3,
     };
     assert_eq!(
-        bm.path(),
+        bm.path()?,
         vec![
             PathSegment::Horizontal(1),
             PathSegment::Vertical(1),
@@ -516,16 +631,17 @@ fn mini_2x3_one_euler() {
             PathSegment::Close,
         ],
     );
+    Ok(())
 }
 
 #[test]
-fn mini_3x2_two_euler() {
+fn mini_3x2_two_euler() -> Result<(), BitmapConversionError> {
     let bm = Bitmap {
         bits: vec![true, true, false, false, false, true],
         width: 2,
     };
     assert_eq!(
-        bm.path(),
+        bm.path()?,
         vec![
             PathSegment::Horizontal(2),
             PathSegment::Vertical(1),
@@ -538,20 +654,23 @@ fn mini_3x2_two_euler() {
             PathSegment::Close,
         ],
     );
+    Ok(())
 }
 
 #[test]
-fn empty() {
-    let bm = Bitmap::new(vec![false; 6], 2);
-    assert_eq!(bm.path(), vec![]);
+fn empty() -> Result<(), BitmapConversionError> {
+    let bm = Bitmap::new(vec![false; 6], 2)?;
+    assert_eq!(bm.path()?, vec![]);
+    Ok(())
 }
 
 #[test]
-fn edge_hint() {
+fn edge_hint() -> Result<(), BitmapConversionError> {
     let bm = Bitmap {
         bits: vec![false, false, true, true, true, true],
         width: 3,
     };
-    let graph = bits_to_edge_graph(&bm.bits, bm.width(), bm.height());
-    assert_eq!(*graph.edge_hint.borrow(), 2);
+    let graph = bits_to_edge_graph(&bm.bits, bm.width(), bm.height())?;
+    assert_eq!(graph.edge_hint.get(), 2);
+    Ok(())
 }

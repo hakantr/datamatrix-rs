@@ -897,7 +897,6 @@ impl SymbolSize {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn num_codewords(&self) -> usize {
         let num_data = self.num_data_codewords();
         let setup = self.block_setup();
@@ -1056,11 +1055,12 @@ fn test_width_range() {
 }
 
 #[test]
-fn test_minimal_example_every_symbol() {
+fn test_minimal_example_every_symbol() -> Result<(), crate::data::DataEncodingError> {
     use crate::DataMatrix;
     for sym in SYMBOL_SIZES {
-        DataMatrix::encode(b"OK", *sym).unwrap();
+        DataMatrix::encode(b"OK", *sym)?;
     }
+    Ok(())
 }
 
 #[test]

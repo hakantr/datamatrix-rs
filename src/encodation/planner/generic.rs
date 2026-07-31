@@ -97,7 +97,10 @@ impl<'a> GenericPlan<'a> {
 
     /// Get the mode this plan started with.
     pub(super) fn start_mode(&self) -> EncodationType {
-        self.switches[0].1
+        self.switches
+            .first()
+            .map(|switch| switch.1)
+            .unwrap_or_else(|| self.current())
     }
 
     /// Get the current encodation type (mode).
@@ -129,7 +132,6 @@ impl<'a> GenericPlan<'a> {
         macro_rules! add_switch {
             ($plan:ident, $enum:ident, $cost_extra:expr) => {
                 let switches = if as_start {
-                    assert_eq!(self.switches.len(), 1);
                     vec![(rest_len, EncodationType::$enum)]
                 } else {
                     let mut switches = self.switches.clone();
@@ -255,11 +257,13 @@ impl<'a> Context<'a> {
 
 impl<'a> ContextInformation for Context<'a> {
     fn symbol_size_left(&self, extra_chars: usize) -> Option<usize> {
-        self.symbol_list.space_left_for(self.written + extra_chars)
+        self.written
+            .checked_add(extra_chars)
+            .and_then(|written| self.symbol_list.space_left_for(written))
     }
 
     fn write(&mut self, size: usize) {
-        self.written += size;
+        self.written = self.written.saturating_add(size);
     }
 
     fn rest(&self) -> &[u8] {
@@ -278,7 +282,7 @@ impl<'a> ContextInformation for Context<'a> {
 }
 
 #[test]
-fn test_add_switch_ascii() {
+fn test_add_switch_ascii() -> Result<(), &'static str> {
     let symbols = crate::SymbolList::default();
     let mut plan = GenericPlan::for_mode(EncodationType::Ascii, b"[]ABC01", 0, &symbols);
     plan.step();
@@ -287,12 +291,12 @@ fn test_add_switch_ascii() {
     assert_eq!(plan.cost(), 3.into());
     let mut list = vec![];
     plan.add_switches(&mut list, 20, false, EncodationType::all());
-    match &list[4].plan {
-        PlanImpl::C40(pl) => {
-            // one char was consumed
-            assert_eq!(pl.cost(), Frac::new(2, 3));
-        }
-        other => panic!("wrong return type, {:?}", other),
-    }
-    assert_eq!(list[4].cost(), Frac::new(2, 3) + 4);
+    let plan = list.get(4).ok_or("beklenen planner geçişi bulunamadı")?;
+    let PlanImpl::C40(c40_plan) = &plan.plan else {
+        return Err("planner beklenen C40 planını döndürmedi");
+    };
+    // Bir karakter tüketildi.
+    assert_eq!(c40_plan.cost(), Frac::new(2, 3));
+    assert_eq!(plan.cost(), Frac::new(2, 3) + 4);
+    Ok(())
 }

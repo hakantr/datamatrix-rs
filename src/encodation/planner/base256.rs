@@ -58,7 +58,7 @@ impl<T: ContextInformation> Plan for Base256Plan<T> {
     fn step(&mut self) -> Option<StepResult> {
         let end = !self.ctx.has_more_characters();
         if !end {
-            let _ = self.ctx.eat().unwrap();
+            self.ctx.eat()?;
             self.written += 1;
             self.cost += 1;
             self.ctx.write(1);
