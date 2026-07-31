@@ -363,6 +363,21 @@ const SYMBOL_SIZES: &[SymbolSize] = &[
 ];
 
 impl SymbolSize {
+    /// Alignment pattern dahil, quiet zone hariç symbol genişliğini döndürür.
+    pub fn width(&self) -> usize {
+        self.block_setup().width
+    }
+
+    /// Alignment pattern dahil, quiet zone hariç symbol yüksekliğini döndürür.
+    pub fn height(&self) -> usize {
+        self.block_setup().height
+    }
+
+    /// Alignment pattern dahil, quiet zone hariç `(width, height)` değerlerini döndürür.
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width(), self.height())
+    }
+
     pub(crate) fn num_data_codewords(&self) -> usize {
         match self {
             Self::Square10 => 3,
@@ -1111,6 +1126,14 @@ fn test_list_all() {
     for size in SymbolList::all() {
         assert!(SYMBOL_SIZES.contains(&size));
     }
+}
+
+#[test]
+fn test_public_symbol_dimensions() {
+    assert_eq!(SymbolSize::Square144.dimensions(), (144, 144));
+    assert_eq!(SymbolSize::Rect8x32.dimensions(), (32, 8));
+    assert_eq!(SymbolSize::Rect26x64.width(), 64);
+    assert_eq!(SymbolSize::Rect26x64.height(), 26);
 }
 
 #[test]

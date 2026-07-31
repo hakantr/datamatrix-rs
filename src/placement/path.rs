@@ -13,7 +13,7 @@ type N = isize;
 ///
 /// [Bitmap yapısının](Bitmap) [path() fonksiyonunda](Bitmap::path) kullanılır.
 /// Ayrıntılar için ilgili dokümantasyona bakın.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathSegment {
     /// Çizim yapmadan relative hareketi temsil eder.
     ///

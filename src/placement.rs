@@ -8,6 +8,7 @@
 //! Soyut bitmap yapısı [Bitmap], encoding işleminin son çıktısı ve decoding
 //! işleminin input'udur. Rendering yardımcılarını da içerir.
 use alloc::{string::String, vec, vec::Vec};
+use core::num::NonZeroUsize;
 
 use crate::symbol_size::{SymbolList, SymbolSize};
 
@@ -712,10 +713,44 @@ impl MatrixMap<bool> {
 ///
 /// İçeriği render etmek için yardımcılar içerir. Piksel benzeri hedeflerde
 /// [pixels()](Self::pixels), vector formatlarda [path()](Self::path) kullanılabilir.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bitmap<M> {
     width: usize,
     bits: Vec<M>,
+}
+
+/// Bir bitmap satırındaki ardışık HIGH module dizisi.
+///
+/// Bu yapı, her module için ayrı bir çizim komutu üretmeden bitmap'i yatay
+/// dikdörtgenler halinde render etmek için kullanılabilir. `width` her zaman
+/// sıfırdan büyüktür.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ModuleRun {
+    x: usize,
+    y: usize,
+    width: NonZeroUsize,
+}
+
+impl ModuleRun {
+    /// Run'ın başladığı yatay module koordinatını döndürür.
+    pub const fn x(self) -> usize {
+        self.x
+    }
+
+    /// Run'ın bulunduğu dikey module koordinatını döndürür.
+    pub const fn y(self) -> usize {
+        self.y
+    }
+
+    /// Run içindeki ardışık module sayısını döndürür.
+    pub const fn width(self) -> usize {
+        self.width.get()
+    }
+
+    /// Run'ın hariç tutulan sağ sınırını döndürür.
+    pub const fn end_x(self) -> usize {
+        self.x + self.width.get()
+    }
 }
 
 impl Bit for bool {
@@ -778,6 +813,39 @@ impl<B: Bit> Bitmap<B> {
     /// Bitmap yüksekliğini döndürür; quiet zone dahil değildir.
     pub fn height(&self) -> usize {
         self.bits.len() / self.width
+    }
+
+    /// Bitmap'in `(width, height)` değerlerini döndürür; quiet zone dahil değildir.
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width(), self.height())
+    }
+
+    /// Bitmap satırları üzerinde row-major sırada iterator döndürür.
+    pub fn rows(&self) -> core::slice::ChunksExact<'_, B> {
+        self.bits.chunks_exact(self.width)
+    }
+
+    /// Her satırdaki ardışık HIGH module run'ları üzerinde iterator döndürür.
+    ///
+    /// Run'lar yukarıdan aşağıya, aynı satır içinde soldan sağa sıralanır. Bu
+    /// gösterim özellikle GPU tabanlı renderer'larda birden fazla komşu module'ü
+    /// tek dikdörtgenle çizmek için uygundur.
+    pub fn dark_runs(&self) -> impl Iterator<Item = ModuleRun> + '_ {
+        self.rows().enumerate().flat_map(|(y, row)| {
+            let mut cursor = 0;
+            core::iter::from_fn(move || {
+                while row.get(cursor).is_some_and(|module| *module != B::HIGH) {
+                    cursor += 1;
+                }
+
+                let x = cursor;
+                while row.get(cursor).is_some_and(|module| *module == B::HIGH) {
+                    cursor += 1;
+                }
+
+                NonZeroUsize::new(cursor - x).map(|width| ModuleRun { x, y, width })
+            })
+        })
     }
 
     /// Unicode gösterimi ("ASCII art") hesaplar.
@@ -854,7 +922,10 @@ impl<B: Bit> Bitmap<B> {
             .map(move |(i, _b)| (i % w, i / w))
     }
 
-    #[doc(hidden)]
+    /// Bitmap module'lerini row-major sırada döndürür.
+    ///
+    /// Satır dilimleri gerekiyorsa [rows()](Self::rows), yalnızca HIGH module
+    /// koordinatları gerekiyorsa [pixels()](Self::pixels) tercih edilebilir.
     pub fn bits(&self) -> &[B] {
         &self.bits
     }
@@ -950,6 +1021,33 @@ fn test_bitmap_new() -> Result<(), BitmapConversionError> {
     Bitmap::new([true, false], 2)?;
     let data = &[true, false];
     Bitmap::new(data.iter().cloned(), 2)?;
+    Ok(())
+}
+
+#[test]
+fn test_bitmap_rows_and_dark_runs() -> Result<(), BitmapConversionError> {
+    let bitmap = Bitmap::new(
+        [
+            false, true, true, false, true, true, true, true, false, false, false, true,
+        ],
+        4,
+    )?;
+
+    let rows: Vec<Vec<bool>> = bitmap.rows().map(<[bool]>::to_vec).collect();
+    assert_eq!(
+        rows,
+        vec![
+            vec![false, true, true, false],
+            vec![true, true, true, true],
+            vec![false, false, false, true],
+        ]
+    );
+
+    let runs: Vec<_> = bitmap
+        .dark_runs()
+        .map(|run| (run.x(), run.y(), run.width(), run.end_x()))
+        .collect();
+    assert_eq!(runs, vec![(1, 0, 2, 3), (0, 1, 4, 4), (3, 2, 1, 4)]);
     Ok(())
 }
 
