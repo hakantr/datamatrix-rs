@@ -64,29 +64,8 @@ jobs:
       - name: Dokümantasyon testlerini çalıştır
         run: cargo test --doc --all-features
 
-  semantic-versioning:
-    name: Semantik sürümlemeyi denetle
-    runs-on: ubuntu-latest
-    steps:
-      - name: datamatrix-rs deposunu indir
-        uses: actions/checkout@v7
-        with:
-          path: datamatrix-rs
-      - name: Yerel GPUI snapshot'ını indir
-        uses: actions/checkout@v7
-        with:
-          repository: hakantr/gpui
-          ref: b460c6d21e0738374d79fa854baf4d17da221371
-          path: gpui
-      - name: Yerel qrcode-rust snapshot'ını indir
-        uses: actions/checkout@v7
-        with:
-          repository: hakantr/qrcode-rust
-          ref: cbba285d0694fe9c461b146b884fd0ed2dbf9413
-          path: qrcode-rust
-      - name: Semver uyumluluğunu denetle
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          manifest-path: datamatrix-rs/Cargo.toml
-          feature-group: all-features
-          rust-toolchain: 1.95.0
+# Not: Bu depo `publish = false` ile işaretlidir ve GPUI'yi yalnızca yerel path
+# dependency olarak kullanır; crates.io'ya yayımlanmaz. Bu nedenle semver
+# uyumluluk denetimi yapılmaz: cargo-semver-checks baseline olarak crates.io'daki
+# yukarı akış `datamatrix` paketini indirir ve bu fork'un API'sini ilgisiz bir
+# paketle karşılaştırırdı.
