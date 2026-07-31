@@ -154,32 +154,34 @@ where
     let error_locations = inv_error_locations;
 
     // 4. Hataları düzelt.
+    //
+    // `position`, block'un kendi codeword dizisindeki sıradır: önce `n_data` data
+    // codeword, ardından `n_error` error codeword gelir. Data ve error bölümleri
+    // ayrı ayrı interleaved olduğundan block'un k. data codeword'ü `data` dilimi
+    // içinde `k * stride`, k. error codeword'ü ise `error` dilimi içinde yine
+    // `k * stride` konumundadır. Error konumu bu nedenle `data` diliminin
+    // uzunluğundan değil, block'taki data codeword sayısından türetilmelidir;
+    // aksi halde `data.len()` stride'ın katı olmadığında (örneğin Square52'nin
+    // ikinci block'u veya Square144) yanlış codeword düzeltilir.
     for (loc, err) in error_locations.iter().zip(syndromes.iter()) {
         let i = loc.log();
-        if i >= n {
+        let Some(position) = n.checked_sub(i).and_then(|value| value.checked_sub(1)) else {
             return Err(ErrorDecodingError::ErrorsOutsideRange);
-        }
-        let remaining = n
-            .checked_sub(i)
-            .and_then(|value| value.checked_sub(1))
-            .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
-        let mut idx = remaining
-            .checked_mul(stride)
-            .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
-        if idx < data.len() {
-            let target = data
-                .get_mut(idx)
-                .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
-            *target = (GF(*target) - *err).into();
+        };
+        let target = if position < n_data {
+            position
+                .checked_mul(stride)
+                .and_then(|index| data.get_mut(index))
         } else {
-            idx = idx
-                .checked_sub(data.len())
-                .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
-            let target = error
-                .get_mut(idx)
-                .ok_or(ErrorDecodingError::ErrorsOutsideRange)?;
-            *target = (GF(*target) - *err).into();
-        }
+            position
+                .checked_sub(n_data)
+                .and_then(|block_index| block_index.checked_mul(stride))
+                .and_then(|index| error.get_mut(index))
+        };
+        let Some(target) = target else {
+            return Err(ErrorDecodingError::ErrorsOutsideRange);
+        };
+        *target = (GF(*target) - *err).into();
     }
 
     Ok(())
@@ -789,6 +791,112 @@ fn set_test_codeword(
         .get_mut(index)
         .ok_or(ErrorDecodingError::Malfunction)?;
     *codeword = value;
+    Ok(())
+}
+
+/// Verilen block'un içerdiği data codeword sayısını döndürür.
+#[cfg(test)]
+fn data_codewords_in_block(size: SymbolSize, block: usize) -> usize {
+    size.num_data_codewords()
+        .saturating_sub(block)
+        .div_ceil(size.block_setup().num_ecc_blocks)
+}
+
+/// Verilen block'un `index`. codeword'ünün interleaved dizideki konumunu döndürür.
+///
+/// Data ve error bölümleri ayrı ayrı interleaved edilir; bu nedenle error
+/// codeword'lerinin konumu data bölümünün uzunluğuna göre kaydırılır.
+#[cfg(test)]
+fn interleaved_position(size: SymbolSize, block: usize, index: usize) -> usize {
+    let setup = size.block_setup();
+    let num_data = size.num_data_codewords();
+    let data_per_block = data_codewords_in_block(size, block);
+    if index < data_per_block {
+        block + index * setup.num_ecc_blocks
+    } else {
+        num_data + block + (index - data_per_block) * setup.num_ecc_blocks
+    }
+}
+
+/// Her symbol size ve her interleaved block için tek codeword hatası
+/// düzeltilebilmelidir.
+///
+/// Regresyon: interleaved boyutlarda (Square52 ve üstü) error codeword
+/// bölgesindeki hatalar yanlış konuma eşleniyor, bu da ya başka bir codeword'ün
+/// bozulmasına ya da `ErrorsOutsideRange` ile symbol'ün tümden reddedilmesine
+/// yol açıyordu.
+#[test]
+fn test_single_error_in_every_block_is_corrected() -> Result<(), Box<dyn std::error::Error>> {
+    let mut random_data = crate::test::random_data();
+    for size in crate::SymbolList::all() {
+        let setup = size.block_setup();
+        let num_data = size.num_data_codewords();
+        let data = random_data(num_data);
+        let ecc = crate::errorcode::encode_error(&data, size)?;
+        let mut correct = data.clone();
+        correct.extend_from_slice(&ecc);
+
+        for block in 0..setup.num_ecc_blocks {
+            // Block'un ilk data, son data, ilk error ve son error codeword'ü.
+            let block_data = data_codewords_in_block(size, block);
+            let block_len = block_data + setup.num_ecc_per_block;
+            for index in [
+                0,
+                block_data.saturating_sub(1),
+                block_data,
+                block_len.saturating_sub(1),
+            ] {
+                let position = interleaved_position(size, block, index);
+                let mut received = correct.clone();
+                let original = received
+                    .get(position)
+                    .copied()
+                    .ok_or(ErrorDecodingError::Malfunction)?;
+                set_test_codeword(&mut received, position, original ^ 0x5A)?;
+                decode(&mut received, size)?;
+                assert_eq!(
+                    received, correct,
+                    "{size:?}: block {block}, codeword {index} (konum {position})"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Block başına düzeltilebilir azami hata sayısı gerçekten düzeltilebilmelidir.
+#[test]
+fn test_maximum_errors_per_block_are_corrected() -> Result<(), Box<dyn std::error::Error>> {
+    let mut random_data = crate::test::random_data();
+    for size in crate::SymbolList::all() {
+        let setup = size.block_setup();
+        let num_data = size.num_data_codewords();
+        let data = random_data(num_data);
+        let ecc = crate::errorcode::encode_error(&data, size)?;
+        let mut correct = data.clone();
+        correct.extend_from_slice(&ecc);
+
+        let correctable = setup.num_ecc_per_block / 2;
+        for block in 0..setup.num_ecc_blocks {
+            let block_len = data_codewords_in_block(size, block) + setup.num_ecc_per_block;
+            let mut received = correct.clone();
+            for error in 0..correctable {
+                // Hataları block içinde eşit aralıklarla dağıt.
+                let index = (error * block_len) / correctable.max(1);
+                let position = interleaved_position(size, block, index);
+                let original = received
+                    .get(position)
+                    .copied()
+                    .ok_or(ErrorDecodingError::Malfunction)?;
+                set_test_codeword(&mut received, position, original ^ 0xA5)?;
+            }
+            decode(&mut received, size)?;
+            assert_eq!(
+                received, correct,
+                "{size:?}: block {block} içinde {correctable} hata düzeltilemedi"
+            );
+        }
+    }
     Ok(())
 }
 
