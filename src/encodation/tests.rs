@@ -208,13 +208,77 @@ fn test_c40_special_case2_d() {
 
 #[test]
 fn test_c40_special_cases2() {
-    // Kullanılabilir alan > 2 ve kalan = 2 ise unlatch uygular ve ASCII olarak encode eder.
+    // Kullanılabilir alan > 2 ve kalan = 2 ise üçlü, 7.2.5.3 b'deki gibi Shift 1
+    // ile doldurulur ve unlatch uygulanır: son çift (a, i, Shift 1) = (90, 241).
     assert_eq!(
         enc(b"aimaimaimaimaimaimai"),
         vec![
-            239, 91, 11, 91, 11, 91, 11, 91, 11, 91, 11, 91, 11, 90, 242, 254
+            239, 91, 11, 91, 11, 91, 11, 91, 11, 91, 11, 91, 11, 90, 241, 254
         ]
     );
+}
+
+#[test]
+fn test_c40_rule_c_preempt_no_orphan_shift() {
+    // Son karakter iki değerliyse ('!' = Shift 2 + 0) ve üçlü sınırını
+    // bölecekse karakter C40'a hiç sokulmaz: kalan iki değer 7.2.5.3 b'deki
+    // gibi Shift 1 ile kapatılır ((A, B, Shift1) = 89, 217), UNLATCH ve ASCII
+    // izler. Eski davranış shift değerini üçlüde askıda bırakıyordu (89, 218).
+    assert_eq!(
+        enc_mode(b"AB!", EncodationType::C40),
+        vec![230, 89, 217, 254, 34]
+    );
+    // Üretilen akış sondaki Shift 1 pad'iyle birlikte doğru decode edilir.
+    assert_eq!(
+        crate::decodation::decode_data(&[230, 89, 217, 254, 34]),
+        Ok(b"AB!".to_vec())
+    );
+}
+
+#[test]
+fn test_c40_rule_d_preempt_no_orphan_shift() {
+    // Rule d'nin (7.2.5.3 d) tam-sığma çerçevesi: son üçlüden sonra tek yuva
+    // kalır. İki değerli son karakter ('!') üçlüyü böleceğine geri alınır; üçlü
+    // Shift 1 pad ile kapatılır ((A, B, Shift1) = 89, 217) ve '!' örtük unlatch
+    // ile son yuvaya ASCII olarak yazılır. Eski davranış üçlüde Shift 2'yi
+    // askıda bırakıyordu (89, 218). Kural, "(data character)" ön koşulunu içerir.
+    assert_eq!(
+        enc_mode(b"AIMAIMAB!", EncodationType::C40),
+        vec![230, 91, 11, 91, 11, 89, 217, 34]
+    );
+    // Örtük unlatch'li akış doğru decode edilir.
+    assert_eq!(
+        crate::decodation::decode_data(&[230, 91, 11, 91, 11, 89, 217, 34]),
+        Ok(b"AIMAIMAB!".to_vec())
+    );
+}
+
+#[test]
+fn test_base256_length_at_249_boundary() {
+    // ISO/IEC 16022:2024 Table 8: 249 byte'a kadar tek byte'lık uzunluk alanı
+    // kullanılır. Randomize edilmiş d1 = 249 + ((149*2) mod 255 + 1) - 256 = 37.
+    let out = enc(&vec![150; 249]);
+    assert_eq!(out.first(), Some(&231));
+    assert_eq!(out.get(1), Some(&37));
+    // İlk data byte'ı: 150 + ((149*3) mod 255 + 1) = 343 - 256 = 87.
+    assert_eq!(out.get(2), Some(&87));
+    // 2 + 249 = 251 codeword Square64'e (280) pad'lenir; ilk pad 129'dur.
+    assert_eq!(out.get(2 + 249), Some(&129));
+    assert_eq!(out.len(), 280);
+}
+
+#[test]
+fn test_base256_length_at_250_boundary() {
+    // 250 byte iki byte'lık uzunluk alanına geçer: d1 = 250, d2 = 0.
+    // Randomize edilmiş halleri 38 (294 - 256) ve 193 (0 + 193).
+    let out = enc(&vec![150; 250]);
+    assert_eq!(out.first(), Some(&231));
+    assert_eq!(out.get(1..3), Some(&[38, 193][..]));
+    // İlk data byte'ı: 150 + ((149*4) mod 255 + 1) = 237.
+    assert_eq!(out.get(3), Some(&237));
+    // 3 + 250 = 253 codeword Square64'e (280) pad'lenir; ilk pad 129'dur.
+    assert_eq!(out.get(3 + 250), Some(&129));
+    assert_eq!(out.len(), 280);
 }
 
 #[test]
@@ -558,10 +622,11 @@ fn test_unlatching_from_text() {
 
 #[test]
 fn test_hello_world() {
+    // Sondaki iki değerlik kalıntı Shift 1 pad ile üçlüye tamamlanır (bkz. 7.2.5.3 b).
     let out = enc(b"Hello World!");
     assert_eq!(
         out,
-        vec![73, 239, 116, 130, 175, 123, 148, 64, 158, 234, 254, 34]
+        vec![73, 239, 116, 130, 175, 123, 148, 64, 158, 233, 254, 34]
     );
 }
 

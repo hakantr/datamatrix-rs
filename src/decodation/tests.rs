@@ -342,3 +342,108 @@ fn regression21() {
         74, 74, 40, 74, 66, 64, 64, 32, 0, // 1 + 6 Edifact + '0'
     ]);
 }
+
+#[test]
+fn decode_structured_append_rejected_cleanly() {
+    // Codeword 233 (Structured Append) uygulanmadı; decoder bunu sessizce veri
+    // olarak okumak yerine yapılandırılmış hata ile reddetmelidir.
+    assert_eq!(
+        super::decode_data(&[233, 1, 1, 1, 66]),
+        Err(super::DataDecodingError::NotImplemented(
+            "Structured Append"
+        ))
+    );
+}
+
+#[test]
+fn decode_reader_programming_rejected_cleanly() {
+    // Codeword 234 (Reader Programming) için de aynı sözleşme geçerlidir.
+    assert_eq!(
+        super::decode_data(&[234, 66]),
+        Err(super::DataDecodingError::NotImplemented(
+            "Reader Programming"
+        ))
+    );
+}
+
+#[test]
+fn fnc1_first_position_is_flag_not_data() -> Result<(), super::DataDecodingError> {
+    // ISO/IEC 16022:2024, 12.2: ilk konumdaki FNC1 format bayrağıdır ve iletilen
+    // veride yer almaz; sonraki FNC1'ler alan ayırıcıdır ve GS (29) olarak iletilir.
+    let message = super::decode_message(&[232, 66, 232, 67])?;
+    assert_eq!(message.data(), b"A\x1dB");
+    assert_eq!(message.fnc1(), Some(crate::Fnc1Position::First));
+    assert_eq!(message.symbology_identifier(), "]d2");
+    assert_eq!(message.transmission(), b"]d2A\x1dB".to_vec());
+    Ok(())
+}
+
+#[test]
+fn fnc1_second_position_is_flag_not_data() -> Result<(), super::DataDecodingError> {
+    // ISO/IEC 16022:2024, 12.3: ikinci konumdaki FNC1 endüstri formatını bildirir;
+    // ilk symbol karakterindeki veri normal biçimde iletimin başına yazılır.
+    let message = super::decode_message(&[66, 232, 142])?;
+    assert_eq!(message.data(), b"A12");
+    assert_eq!(message.fnc1(), Some(crate::Fnc1Position::Second));
+    assert_eq!(message.symbology_identifier(), "]d3");
+    Ok(())
+}
+
+#[test]
+fn fnc1_later_position_is_field_separator() -> Result<(), super::DataDecodingError> {
+    // ISO/IEC 16022:2024, 7.2.4.7: ilk iki konum dışındaki FNC1 alan ayırıcıdır.
+    let message = super::decode_message(&[66, 67, 232, 68])?;
+    assert_eq!(message.data(), b"AB\x1dC");
+    assert_eq!(message.fnc1(), None);
+    assert_eq!(message.symbology_identifier(), "]d1");
+    Ok(())
+}
+
+#[test]
+fn c40_fnc1_is_field_separator() {
+    // ISO/IEC 16022:2024, 7.2.4.7 ve Table C.1: C40 içindeki FNC1 (Shift 2 seti,
+    // değer 27) alan ayırıcıdır ve GS (29) olarak iletilir.
+    // Üçlü (Shift 2, 27, 'A'): 1600*1 + 40*27 + 14 + 1 = 2695 → (10, 135).
+    assert_eq!(super::decode_data(&[230, 10, 135]), Ok(vec![29, b'A']));
+}
+
+#[test]
+fn transmitted_data_example_clause_12_7() -> Result<(), super::DataDecodingError> {
+    // ISO/IEC 16022:2024, 12.7'deki örnek: "¶Ж" mesajı [235, 55, 241, 8, 235, 55]
+    // codeword'leriyle encode edilir; iletim ]d4 symbology identifier ve \000007
+    // ECI escape dizisiyle 93 100 52 182 92 48 48 48 48 48 55 182 byte'larıdır.
+    let message = super::decode_message(&[235, 55, 241, 8, 235, 55])?;
+    assert_eq!(message.data(), &[182, 182]);
+    assert_eq!(message.eci_spans(), &[(1, 7)]);
+    assert_eq!(message.fnc1(), None);
+    assert_eq!(message.symbology_identifier(), "]d4");
+    assert_eq!(
+        message.transmission(),
+        vec![93, 100, 52, 182, 92, 48, 48, 48, 48, 48, 55, 182]
+    );
+    Ok(())
+}
+
+#[test]
+fn transmission_doubles_backslash_when_eci_present() -> Result<(), super::DataDecodingError> {
+    // ISO/IEC 16022:2024, 12.5: ECI protokolü etkinken verideki backslash (92)
+    // iki kez iletilir; tek backslash her zaman escape karakteridir.
+    let message = super::decode_message(&[241, 27, 93])?;
+    assert_eq!(message.data(), b"\\");
+    assert_eq!(message.transmission(), b"]d4\\000026\\\\".to_vec());
+    Ok(())
+}
+
+#[test]
+fn symbology_identifier_with_fnc1_and_eci() -> Result<(), super::DataDecodingError> {
+    // ISO/IEC 16022:2024, Table H.1: FNC1 + ECI kombinasyonları 5 ve 6
+    // seçenek değerlerini üretir.
+    let message = super::decode_message(&[232, 241, 27, 66])?;
+    assert_eq!(message.fnc1(), Some(crate::Fnc1Position::First));
+    assert_eq!(message.symbology_identifier(), "]d5");
+
+    let message = super::decode_message(&[66, 232, 241, 27, 67])?;
+    assert_eq!(message.fnc1(), Some(crate::Fnc1Position::Second));
+    assert_eq!(message.symbology_identifier(), "]d6");
+    Ok(())
+}

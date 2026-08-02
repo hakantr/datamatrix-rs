@@ -12,8 +12,10 @@
 use alloc::{string::String, vec::Vec};
 use flagset::FlagSet;
 
-pub use crate::decodation::{DataDecodingError, decode_data, decode_str};
-pub use crate::encodation::{DataEncodingError, EncodationType};
+pub use crate::decodation::{
+    DataDecodingError, DecodedMessage, decode_data, decode_message, decode_str,
+};
+pub use crate::encodation::{DataEncodingError, EncodationType, Fnc1Position};
 use crate::encodation::{GenericDataEncoder, planner::optimize};
 
 use super::{SymbolList, SymbolSize};
@@ -29,7 +31,7 @@ pub fn encode_data(
     enabled_modes: impl Into<FlagSet<EncodationType>>,
     use_macros: bool,
 ) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
-    encode_data_internal(data, symbol_list, eci, enabled_modes, use_macros, false)
+    encode_data_internal(data, symbol_list, eci, enabled_modes, use_macros, None)
 }
 
 pub(crate) fn encode_data_internal(
@@ -38,12 +40,16 @@ pub(crate) fn encode_data_internal(
     eci: Option<u32>,
     enabled_modes: impl Into<FlagSet<EncodationType>>,
     use_macros: bool,
-    fnc1_start: bool,
+    fnc1: Option<Fnc1Position>,
 ) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
-    let mut encoder =
-        GenericDataEncoder::with_size(data, symbol_list, enabled_modes.into(), fnc1_start);
-    if use_macros {
+    let mut encoder = GenericDataEncoder::with_size(data, symbol_list, enabled_modes.into(), fnc1);
+    // Macro'lar ilk symbol karakteri konumunu kullanır (7.2.4.8); FNC1 ile
+    // birlikte kullanılamazlar.
+    if use_macros && fnc1.is_none() {
         encoder.use_macro_if_possible();
+    }
+    if fnc1 == Some(Fnc1Position::Second) {
+        encoder.write_fnc1_second()?;
     }
     if let Some(eci) = eci {
         encoder.write_eci(eci)?;
@@ -61,7 +67,7 @@ pub(crate) fn encode_data_unpadded_len(
     symbol_list: &SymbolList,
     enabled_modes: impl Into<FlagSet<EncodationType>>,
 ) -> Option<usize> {
-    let mut encoder = GenericDataEncoder::with_size(data, symbol_list, enabled_modes.into(), false);
+    let mut encoder = GenericDataEncoder::with_size(data, symbol_list, enabled_modes.into(), None);
     encoder.unpadded_len().ok()
 }
 

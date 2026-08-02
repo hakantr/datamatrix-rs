@@ -69,10 +69,13 @@
 //! üzerinden sunulmuştur. Eksik olan tek parça, görselden true ve false değerlerinden
 //! oluşan matrix'i çıkaran detector'dır. Gelecekte genel amaçlı bir detector planlanmaktadır.
 //!
-//! Diğer sınırlamalar: Şu anda GS1/FNC1 character encoding için [sınırlı destek](DataMatrix::encode_gs1),
-//! [sınırlı ECI encoding](DataMatrix::encode_str) vardır; structured append ve
-//! reader programming yoktur. ISO/IEC 15424 içinde belirtilen decoding çıktı
-//! formatı da (metadata, ECI vb.) uygulanmamıştır. Buna ihtiyacınız varsa issue açın.
+//! Diğer sınırlamalar: ISO/IEC 16022:2024 içinde opsiyonel olan structured append
+//! ve reader programming özellikleri uygulanmamıştır; decoder bu codeword'leri
+//! standardın istediği gibi veri iletmeden, yapılandırılmış hata ile reddeder.
+//! FNC1 ilk veya ikinci konumda encode edilebilir ([DataMatrixBuilder::with_fnc1]),
+//! ECI numaraları encode edilebilir ve decode tarafında ISO/IEC 15424 symbology
+//! identifier ile Clause 12 iletim formatı [DecodedMessage] üzerinden üretilebilir.
+//! Eksik bir şeye ihtiyacınız varsa issue açın.
 //!
 //! # Hata ve panik sözleşmesi
 //!
@@ -103,7 +106,8 @@ pub mod data;
 #[cfg(feature = "gpui")]
 pub mod gpui;
 
-pub use encodation::EncodationType;
+pub use decodation::DecodedMessage;
+pub use encodation::{EncodationType, Fnc1Position};
 pub use symbol_size::{SymbolList, SymbolSize};
 
 /// Private alanlar ve doğrulanmış kurucularla korunan bir iç değişmezin
@@ -177,12 +181,28 @@ impl DataMatrix {
     /// Piksellerin row-major sırada verilmesi beklenir; önce en üst satır, ardından
     /// ikinci satır ve diğerleri gelir.
     ///
-    /// Data Matrix, GS1 Data Matrix olduğunu belirten `FNC1` codeword ile başlayabilir.
-    /// ISO standardı bu durumda scanner'ın symbology identifier `]d2` değerini
-    /// başa eklemesini ister. Bu davranış burada uygulanmamıştır; decoder başlangıçtaki
-    /// `FNC1` codeword'ü şimdilik yalnızca yok sayar. Talep olursa daha ayrıntılı
-    /// decoder çıktısı uygulanabilir.
+    /// Ham veri byte'larını döndürür. İlk veya ikinci konumdaki format bayrağı
+    /// `FNC1` veri olarak iletilmez; symbology identifier (`]d2` vb.) ve ECI
+    /// bilgisiyle birlikte ISO/IEC 16022:2024 Clause 12 iletim çıktısı için
+    /// [decode_message()](Self::decode_message) yöntemine bakın. ECI içeren
+    /// symbol'lerde bu fonksiyon hata döndürür.
     pub fn decode(pixels: &[bool], width: usize) -> Result<Vec<u8>, DecodingError> {
+        let data_codewords = Self::data_codewords_from_pixels(pixels, width)?;
+        decodation::decode_data(&data_codewords).map_err(DecodingError::DataDecoding)
+    }
+
+    /// Data Matrix'i piksel gösteriminden iletim metadata'sıyla birlikte decode eder.
+    ///
+    /// [decode()](Self::decode) yönteminden farklı olarak ECI içeren symbol'leri
+    /// reddetmez; FNC1 konumunu, ECI bölümlerini, Annex H symbology identifier
+    /// değerini ve Clause 12 iletim byte'larını [DecodedMessage] üzerinden sunar.
+    pub fn decode_message(pixels: &[bool], width: usize) -> Result<DecodedMessage, DecodingError> {
+        let data_codewords = Self::data_codewords_from_pixels(pixels, width)?;
+        decodation::decode_message(&data_codewords).map_err(DecodingError::DataDecoding)
+    }
+
+    /// Piksellerden error correction uygulanmış data codeword'lerini çıkarır.
+    fn data_codewords_from_pixels(pixels: &[bool], width: usize) -> Result<Vec<u8>, DecodingError> {
         let (matrix_map, size) =
             MatrixMap::try_from_bits(pixels, width).map_err(DecodingError::PixelConversion)?;
         let mut codewords = matrix_map.codewords();
@@ -192,7 +212,7 @@ impl DataMatrix {
                 "decode edilen data codeword aralığı toplam codeword sayısını aştı",
             );
         };
-        decodation::decode_data(data_codewords).map_err(DecodingError::DataDecoding)
+        Ok(data_codewords.to_vec())
     }
 
     /// Data'yı encoded biçimde döndürür.
@@ -249,9 +269,9 @@ impl DataMatrix {
 
     /// Data'yı GS1 Data Matrix olarak encode eder.
     ///
-    /// [encode()](Self::encode) yönteminden tek farkı, ilk konuma `FNC1` codeword eklenmesidir.
-    ///
-    /// `FNC1` değerini sonraki konumlarda encoding henüz uygulanmamıştır.
+    /// [encode()](Self::encode) yönteminden tek farkı, ilk konuma `FNC1` codeword
+    /// eklenmesidir (ISO/IEC 16022:2024, 12.2). İkinci konumdaki FNC1 (endüstri
+    /// formatı, 12.3) için [DataMatrixBuilder::with_fnc1] kullanılabilir.
     ///
     /// ```rust
     /// # use datamatrix::{DataMatrix, SymbolList, data::DataEncodingError};
@@ -267,7 +287,7 @@ impl DataMatrix {
     ) -> Result<DataMatrix, DataEncodingError> {
         DataMatrixBuilder::new()
             .with_symbol_list(symbol_list)
-            .with_fnc1_start(true)
+            .with_fnc1(Some(Fnc1Position::First))
             .encode(data)
     }
 }
@@ -278,7 +298,7 @@ pub struct DataMatrixBuilder {
     encodation_types: FlagSet<EncodationType>,
     symbol_list: SymbolList,
     use_macros: bool,
-    fnc1_start: bool,
+    fnc1: Option<Fnc1Position>,
 }
 
 impl DataMatrixBuilder {
@@ -287,7 +307,7 @@ impl DataMatrixBuilder {
             encodation_types: EncodationType::all(),
             symbol_list: SymbolList::default(),
             use_macros: true,
-            fnc1_start: false,
+            fnc1: None,
         }
     }
 
@@ -313,8 +333,24 @@ impl DataMatrixBuilder {
 
     /// Data Matrix'in GS1 Data Matrix olduğunu belirten `FNC1` codeword ile başlayıp
     /// başlamayacağını belirtir.
+    ///
+    /// [with_fnc1](Self::with_fnc1) yönteminin ilk konumla sınırlı kısaltmasıdır.
     pub fn with_fnc1_start(self, fnc1_start: bool) -> Self {
-        Self { fnc1_start, ..self }
+        Self {
+            fnc1: fnc1_start.then_some(Fnc1Position::First),
+            ..self
+        }
+    }
+
+    /// `FNC1` codeword'ünün konumunu belirtir (ISO/IEC 16022:2024, 7.2.4.7).
+    ///
+    /// [First](Fnc1Position::First), verinin GS1 formatına uyduğunu (12.2);
+    /// [Second](Fnc1Position::Second), AIM tarafından yetkilendirilen bir endüstri
+    /// formatına uyduğunu (12.3) bildirir. İkinci konum için verinin ilk karakteri
+    /// tek codeword'lük ASCII (tek karakter veya rakam çifti) olmalıdır; aksi
+    /// halde encoding hata döndürür. FNC1 belirtildiğinde macro'lar kullanılmaz.
+    pub fn with_fnc1(self, fnc1: Option<Fnc1Position>) -> Self {
+        Self { fnc1, ..self }
     }
 
     /// Macro kullanılıp kullanılmayacağını belirtir.
@@ -375,7 +411,7 @@ impl DataMatrixBuilder {
             eci,
             self.encodation_types,
             self.use_macros,
-            self.fnc1_start,
+            self.fnc1,
         )?;
         let Ok(ecc) = errorcode::encode_error(&codewords, size) else {
             invariant_violation(
@@ -417,6 +453,47 @@ fn test_tile_placement_forth_and_back() -> Result<(), Box<dyn std::error::Error>
         let bitmap = map.bitmap();
         let (matrix_map, _size) = MatrixMap::try_from_bits(bitmap.bits(), bitmap.width())?;
         assert_eq!(matrix_map.codewords(), data);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_annex_i_example() -> Result<(), Box<dyn std::error::Error>> {
+    // ISO/IEC 16022:2024 Annex I: "123456" verisi 10x10 symbol'e, codeword
+    // dizisi 142 164 186 | 114 25 5 88 102 olacak biçimde encode edilir ve
+    // mapping bölgesi Figure I.1 ile birebir aynıdır.
+    let code = DataMatrix::encode(b"123456", SymbolList::default())?;
+    assert_eq!(code.size(), SymbolSize::Square10);
+    assert_eq!(code.codewords(), &[142, 164, 186, 114, 25, 5, 88, 102]);
+
+    let bitmap = code.bitmap();
+    assert_eq!(bitmap.width(), 10);
+    let bits: Vec<bool> = bitmap.bits().into();
+    assert_eq!(bits.len(), 100);
+    // Figure I.1 — 8x8 mapping matrisi (1 = koyu modül).
+    const FIGURE_I1: [&str; 8] = [
+        "10010110", "10000010", "10001110", "10000100", "00000111", "11011000", "11101100",
+        "00111010",
+    ];
+    for (row, modules) in FIGURE_I1.iter().enumerate() {
+        for (col, module) in modules.bytes().enumerate() {
+            assert_eq!(
+                bits.get((row + 1) * 10 + col + 1).copied(),
+                Some(module == b'1'),
+                "Figure I.1 modülü ({row}, {col})"
+            );
+        }
+    }
+    // Finder pattern: sol sütun ve alt satır koyu; üst satır ve sağ sütun alternatif.
+    for i in 0..10 {
+        assert_eq!(bits.get(i * 10).copied(), Some(true), "sol sütun {i}");
+        assert_eq!(bits.get(90 + i).copied(), Some(true), "alt satır {i}");
+        assert_eq!(bits.get(i).copied(), Some(i % 2 == 0), "üst satır {i}");
+        assert_eq!(
+            bits.get(i * 10 + 9).copied(),
+            Some(i % 2 == 1),
+            "sağ sütun {i}"
+        );
     }
     Ok(())
 }
@@ -508,5 +585,54 @@ fn test_simple_gs1() -> Result<(), Box<dyn std::error::Error>> {
 
     let decoded = data::decode_data(result.data_codewords())?;
     assert_eq!(decoded, data);
+
+    // İlk konumdaki FNC1, piksellerden decode edilirken ]d2 symbology
+    // identifier değerini üretir (ISO/IEC 16022:2024, 12.2 ve Annex H).
+    let bitmap = result.bitmap();
+    let pixels: Vec<bool> = bitmap.bits().into();
+    let message = DataMatrix::decode_message(&pixels, bitmap.width())?;
+    assert_eq!(message.data(), data);
+    assert_eq!(message.fnc1(), Some(Fnc1Position::First));
+    assert_eq!(message.symbology_identifier(), "]d2");
     Ok(())
+}
+
+#[test]
+fn test_fnc1_second_position_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    // ISO/IEC 16022:2024, 7.2.4.7 ve 12.3: FNC1 ikinci symbol karakteri
+    // konumundadır; ilk konum tek codeword'lük ASCII verisi taşır.
+    let data = b"A1234567\x1D99";
+    let code = DataMatrixBuilder::new()
+        .with_fnc1(Some(Fnc1Position::Second))
+        .encode(data)?;
+    assert_eq!(code.data_codewords().get(..2), Some(&[66, 232][..]));
+    let message = data::decode_message(code.data_codewords())?;
+    assert_eq!(message.data(), data);
+    assert_eq!(message.fnc1(), Some(Fnc1Position::Second));
+    assert_eq!(message.symbology_identifier(), "]d3");
+
+    // İlk iki karakter rakamsa ilk konum rakam çifti codeword'ü olur; FNC1
+    // yine ikinci konumdadır.
+    let code = DataMatrixBuilder::new()
+        .with_fnc1(Some(Fnc1Position::Second))
+        .encode(b"1712345")?;
+    assert_eq!(code.data_codewords().get(..2), Some(&[147, 232][..]));
+    let message = data::decode_message(code.data_codewords())?;
+    assert_eq!(message.data(), b"1712345");
+    assert_eq!(message.fnc1(), Some(Fnc1Position::Second));
+    Ok(())
+}
+
+#[test]
+fn test_fnc1_second_position_requires_single_ascii_codeword() {
+    // İlk karakter extended ASCII ise iki codeword gerekir ve FNC1 ikinci
+    // konuma yerleştirilemez; boş veri için de ilk konum doldurulamaz.
+    for data in [&b"\xFFabc"[..], &b""[..]] {
+        assert_eq!(
+            DataMatrixBuilder::new()
+                .with_fnc1(Some(Fnc1Position::Second))
+                .encode(data),
+            Err(DataEncodingError::TooMuchOrIllegalData)
+        );
+    }
 }

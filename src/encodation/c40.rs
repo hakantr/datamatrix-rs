@@ -77,6 +77,7 @@ pub(super) fn handle_end<T>(
     ctx: &mut T,
     last_ch: u8,
     mut buf: ArrayVec<u8, 6>,
+    last_char_preempted: bool,
 ) -> Result<(), DataEncodingError>
 where
     T: EncodingContext,
@@ -126,11 +127,20 @@ where
         }
     }
     if !buf.is_empty() {
-        if buf.try_push(SHIFT2).is_err() {
-            crate::invariant_violation("C40 end-of-data arabelleği kapasitesini aştı");
-        }
-        if buf.len() == 2 && buf.try_push(UPPER_SHIFT).is_err() {
-            crate::invariant_violation("C40 end-of-data arabelleği kapasitesini aştı");
+        if buf.len() == 2 {
+            // İki değerlik kalıntı, ISO/IEC 16022:2024 7.2.5.3 b'deki gibi
+            // Shift 1 ile doldurulur; standardın tanımladığı tek pad değeri budur.
+            if buf.try_push(SHIFT1).is_err() {
+                crate::invariant_violation("C40 end-of-data arabelleği kapasitesini aştı");
+            }
+        } else {
+            // Tek değerlik kalıntı için standart bir dolgu tanımlamaz. Karakter
+            // basmayan tek dolgu (Shift 2, Upper Shift) ikilisidir: Shift 1/2/3
+            // ardından gelen her değer bir karakter üretir, Upper Shift ise yalnızca
+            // bayrak bırakır. Ardından her zaman unlatch veya symbol sonu gelir.
+            if buf.try_push(SHIFT2).is_err() || buf.try_push(UPPER_SHIFT).is_err() {
+                crate::invariant_violation("C40 end-of-data arabelleği kapasitesini aştı");
+            }
         }
         let mut values = buf.iter().copied();
         let Some(c1) = values.next() else {
@@ -164,6 +174,18 @@ where
             }
             return Ok(());
         }
+        // 7.2.5.3 d: ön-alınan son karakter için symbol'de tek codeword yuvası
+        // kaldıysa UNLATCH encode edilmez, örtük kabul edilir. Bu dal yalnızca
+        // ön-alma yolunda geçerlidir; planlanmış mod geçişlerinde UNLATCH
+        // planner tarafından fiyatlandırılmıştır ve yazılması zorunludur.
+        if last_char_preempted
+            && chars_left == 1
+            && ascii::encoding_size(ctx.rest()) == 1
+            && ctx.symbol_size_left(1) == Some(0)
+        {
+            ctx.set_ascii_until_end();
+            return Ok(());
+        }
         ctx.push(super::UNLATCH);
     } else if ctx
         .symbol_size_left(0)
@@ -185,6 +207,7 @@ where
 {
     let mut buf = ArrayVec::new();
     let mut last_ch = 0;
+    let mut last_char_preempted = false;
     while let Some(ch) = ctx.eat() {
         // Buffer boş ve yalnızca iki rakam mı kaldı?
         if buf.is_empty()
@@ -197,8 +220,34 @@ where
             // - codeword içinde 2 alan kaldıysa UNLATCH + 1 codeword.
             break;
         }
-        // Karakteri buffer içine encode eder.
-        to_vals(&mut buf, ch, &low_ascii_write);
+        // Karakteri önce geçici arabelleğe encode eder; son karakter üçlü
+        // sınırını bölecekse hiç dahil edilmeden geri alınabilmelidir.
+        let mut vals = ArrayVec::new();
+        to_vals(&mut vals, ch, &low_ascii_write);
+        // 7.2.5.3 c ve d durumlarının ön-alması: iki değerli son karakter, iki
+        // değerlik dolu bir arabelleğe eklenirse shift değeri son üçlüye taşar
+        // ve kural c/d'nin ASCII dönüşü o shift'i askıda bırakırdı (kurallar
+        // "(data character)" ön koşulunu içerir). Bunun yerine karakter geri
+        // alınır; kalan iki değer Shift 1 pad ile üçlüye tamamlanır ve karakter
+        // ASCII ile encode edilir. UNLATCH, kural c çerçevesinde (bir yuva
+        // artarsa) açık, kural d çerçevesinde (tam sığma) örtüktür. Toplam
+        // uzunluk iki çerçevede de değişmez (planner'ın space_left == 1 ve
+        // space_left == 0 dalları).
+        if ctx.rest().is_empty()
+            && buf.len() == 2
+            && vals.len() == 2
+            && matches!(ctx.symbol_size_left(3), Some(0) | Some(1))
+        {
+            ctx.backup(1);
+            ctx.set_ascii_until_end();
+            last_char_preempted = true;
+            break;
+        }
+        for val in vals {
+            if buf.try_push(val).is_err() {
+                crate::invariant_violation("C40 geçici symbol arabelleği kapasitesini aştı");
+            }
+        }
         last_ch = ch;
         while buf.len() >= 3 {
             let mut values = buf.iter().copied();
@@ -218,7 +267,7 @@ where
             break;
         }
     }
-    handle_end(ctx, last_ch, buf)
+    handle_end(ctx, last_ch, buf, last_char_preempted)
 }
 
 fn to_vals<F>(buf: &mut ArrayVec<u8, 6>, ch: u8, low_ascii_write: F) -> usize

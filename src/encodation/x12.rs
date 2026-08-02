@@ -37,7 +37,8 @@ pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncoding
         }
     }
 
-    // 5.2.7.2: C40'a kıyasla X12 için özel durum; tek alan ve tek symbol kaldı.
+    // ISO/IEC 16022:2024, 7.2.7.3: C40'a kıyasla X12 için özel durum; tek alan
+    // ve tek symbol kaldı.
     let one_ascii_remain_maybe =
         ctx.characters_left() <= 2 && ascii::encoding_size(ctx.rest()) == 1;
     if one_ascii_remain_maybe

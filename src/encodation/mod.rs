@@ -29,7 +29,8 @@ pub(crate) const MACRO05_HEAD: &[u8] = b"[)>\x1E05\x1D";
 pub(crate) const MACRO06_HEAD: &[u8] = b"[)>\x1E06\x1D";
 pub(crate) const MACRO_TRAIL: &[u8] = b"\x1E\x04";
 
-// Aşağıdakiler henüz uygulanmamıştır.
+// ISO/IEC 16022:2024, 6.2 d uyarınca opsiyonel özellikler; encode tarafında
+// uygulanmamıştır, decoder bunları yapılandırılmış hata ile reddeder.
 // const STRUCT_APPEND: u8 = 233;
 // const READER_PROGRAMMING: u8 = 234;
 
@@ -59,6 +60,20 @@ impl core::fmt::Display for DataEncodingError {
 }
 
 impl core::error::Error for DataEncodingError {}
+
+/// `FNC1` codeword'ünün symbol içindeki konumu (ISO/IEC 16022:2024, 7.2.4.7).
+///
+/// İlk konumdaki FNC1 verinin GS1 Application Identifier formatına (12.2),
+/// ikinci konumdaki FNC1 ise AIM tarafından yetkilendirilen bir endüstri
+/// formatına (12.3) uyduğunu bildirir. Bu konumlar dışındaki FNC1 alan
+/// ayırıcıdır ve iletimde GS (ASCII 29) karakterine dönüşür.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fnc1Position {
+    /// FNC1 ilk symbol karakteri konumundadır (GS1 formatı).
+    First,
+    /// FNC1 ikinci symbol karakteri konumundadır (endüstri formatı).
+    Second,
+}
 
 trait EncodingContext {
     /// İleriye bakar ve gerekirse mode'u değiştirir.
@@ -204,9 +219,15 @@ impl<'a> GenericDataEncoder<'a> {
         data: &'a [u8],
         symbol_list: &'a SymbolList,
         enabled_modes: FlagSet<EncodationType>,
-        start_with_fnc1: bool,
+        fnc1: Option<Fnc1Position>,
     ) -> Self {
-        let codewords = if start_with_fnc1 { vec![FNC1] } else { vec![] };
+        // İlk konumdaki FNC1 doğrudan yerleştirilir; ikinci konum için önce ilk
+        // veri karakteri gerektiğinden [write_fnc1_second] ayrıca çağrılmalıdır.
+        let codewords = if fnc1 == Some(Fnc1Position::First) {
+            vec![FNC1]
+        } else {
+            vec![]
+        };
         Self {
             data,
             input: data,
@@ -236,6 +257,36 @@ impl<'a> GenericDataEncoder<'a> {
                 break;
             }
         }
+    }
+
+    /// FNC1 codeword'ünü ikinci symbol karakteri konumuna yerleştirir
+    /// (ISO/IEC 16022:2024, 7.2.4.7 ve 12.3).
+    ///
+    /// İlk symbol karakteri konumu tek codeword'lük ASCII verisi (tek karakter
+    /// veya rakam çifti) içermelidir; ilk veri karakteri burada tüketilir ve
+    /// FNC1 hemen arkasına yazılır. Veri boşsa veya ilk karakter tek ASCII
+    /// codeword ile encode edilemiyorsa (extended ASCII) hata döndürür.
+    pub fn write_fnc1_second(&mut self) -> Result<(), DataEncodingError> {
+        if !self.codewords.is_empty() {
+            crate::invariant_violation(
+                "ikinci konumdaki FNC1 diğer codeword'lerden önce yazılmalıdır",
+            );
+        }
+        match self.data {
+            [a, b, rest @ ..] if a.is_ascii_digit() && b.is_ascii_digit() => {
+                self.codewords.push(ascii::digit_pair_codeword(*a, *b));
+                self.data = rest;
+            }
+            [ch @ 0..=127, rest @ ..] => {
+                self.codewords.push(ch + 1);
+                self.data = rest;
+            }
+            // Boş veri veya iki codeword gerektiren extended ASCII ile FNC1
+            // ikinci konuma yerleştirilemez.
+            _ => return Err(DataEncodingError::TooMuchOrIllegalData),
+        }
+        self.codewords.push(FNC1);
+        Ok(())
     }
 
     pub fn write_eci(&mut self, mut c: u32) -> Result<(), DataEncodingError> {
@@ -377,7 +428,7 @@ impl<'a> GenericDataEncoder<'a> {
 #[test]
 fn test_empty() -> Result<(), DataEncodingError> {
     let symbols = crate::SymbolList::default();
-    let mut enc = GenericDataEncoder::with_size(&[], &symbols, EncodationType::all(), false);
+    let mut enc = GenericDataEncoder::with_size(&[], &symbols, EncodationType::all(), None);
     let (cw, _) = GenericDataEncoder::codewords(&mut enc)?;
     assert_eq!(cw, vec![ascii::PAD, 175, 70]);
     Ok(())

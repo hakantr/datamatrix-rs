@@ -35,7 +35,7 @@ const MODES: [EncodationType; 6] = [
 ];
 
 /// Bit mask'tan etkin mode kümesi oluşturur. Diğer bütün scheme'ler ASCII'den
-/// başlatıldığı için ASCII her zaman eklenir (ISO/IEC 16022, madde 5.2.3).
+/// başlatıldığı için ASCII her zaman eklenir (ISO/IEC 16022:2024, 7.2.1).
 fn modes_from_mask(mask: u8) -> FlagSet<EncodationType> {
     let mut set = FlagSet::from(EncodationType::Ascii);
     for (i, mode) in MODES.iter().enumerate().skip(1) {

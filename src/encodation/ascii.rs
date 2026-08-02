@@ -18,6 +18,12 @@ pub(super) fn two_digits_coming(rest: &[u8]) -> bool {
     }
 }
 
+/// İki rakamı tek "double digit" codeword'e dönüştürür
+/// (ISO/IEC 16022:2024, Table 2: sayısal değer + 130).
+pub(super) fn digit_pair_codeword(a: u8, b: u8) -> u8 {
+    (a - b'0') * 10 + (b - b'0') + 130
+}
+
 pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncodingError> {
     loop {
         // Sıradaki iki karakter rakamsa mode switch istemeden encode eder.
@@ -34,7 +40,7 @@ pub(super) fn encode<T: EncodingContext>(ctx: &mut T) -> Result<(), DataEncoding
                     "ASCII planındaki ikinci basamak input içinde bulunamadı",
                 );
             };
-            ctx.push((a - b'0') * 10 + (b - b'0') + 130);
+            ctx.push(digit_pair_codeword(a, b));
             continue;
         }
         match ctx.eat() {

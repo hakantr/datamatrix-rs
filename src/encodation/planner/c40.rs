@@ -152,7 +152,7 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
         } else {
             // End of data noktasında buffer boştur. Veri symbol'ü tam doldurmuyorsa
             // encoder padding öncesinde sona UNLATCH yazar; pad karakterlerinden önce
-            // ASCII'ye dönülmelidir (ISO 16022, 5.2.3).
+            // ASCII'ye dönülmelidir (ISO/IEC 16022:2024, 7.2.4.4).
             if self.ctx.symbol_size_left(0).unwrap_or(0) > 0 {
                 1
             } else {

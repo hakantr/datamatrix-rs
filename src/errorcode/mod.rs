@@ -309,3 +309,40 @@ fn ecc_block_1() {
     ecc_block(data.iter().cloned(), generator, &mut ecc);
     assert_eq!(ecc.get(..5), Some([255, 207, 37, 244, 81].as_slice()));
 }
+
+#[test]
+fn annex_i_error_codewords() {
+    // ISO/IEC 16022:2024 Annex I: "123456" verisinin data codeword'leri
+    // (142, 164, 186) için beklenen error codeword'ler 114 25 5 88 102'dir.
+    assert_eq!(
+        encode_error(&[142, 164, 186], SymbolSize::Square10),
+        Ok(vec![114, 25, 5, 88, 102])
+    );
+}
+
+#[test]
+fn square144_interleaved_blocks_match_table_a1() {
+    // ISO/IEC 16022:2024 Table A.1 ve Table 10 dipnot c: 144x144 symbol'de
+    // block'lar 10'luk stride ile ayrılır; ilk 8 block 156, son 2 block 155
+    // data codeword taşır ve her block 62 error codeword üretir. 2024 basımı,
+    // ECC codeword'lerinin block 9'dan değil block 1'den başladığını Annex A
+    // içinde açıkça belirtir.
+    let data: Vec<u8> = (0..1558u32).map(|i| (i % 253 + 1) as u8).collect();
+    let ecc = encode_error(&data, SymbolSize::Square144).unwrap_or_default();
+    assert_eq!(ecc.len(), 620);
+    let Some(generator) = GENERATOR_POLYNOMIALS
+        .iter()
+        .copied()
+        .find(|g| g.len() == 62 + 1)
+    else {
+        crate::invariant_violation("62'lik generator polynomial bulunamadı");
+    };
+    for block in 0..10 {
+        let block_data: Vec<u8> = data.iter().copied().skip(block).step_by(10).collect();
+        assert_eq!(block_data.len(), if block < 8 { 156 } else { 155 });
+        let mut expected = vec![0; 62 + 1];
+        ecc_block(block_data.into_iter(), generator, &mut expected);
+        let got: Vec<u8> = ecc.iter().copied().skip(block).step_by(10).collect();
+        assert_eq!(Some(got.as_slice()), expected.get(..62), "block {block}");
+    }
+}

@@ -2,8 +2,8 @@
 //!
 //! `encodation` modülünün ters işlemini uygular.
 use super::encodation::{
-    EncodationType, MACRO_TRAIL, MACRO05, MACRO05_HEAD, MACRO06, MACRO06_HEAD, UNLATCH, ascii,
-    edifact,
+    EncodationType, Fnc1Position, MACRO_TRAIL, MACRO05, MACRO05_HEAD, MACRO06, MACRO06_HEAD,
+    UNLATCH, ascii, edifact,
 };
 use alloc::{string::String, vec::Vec};
 
@@ -93,8 +93,7 @@ pub fn decode_data(data: &[u8]) -> Result<Vec<u8>, DataDecodingError> {
 struct DecodedParts {
     output: Vec<u8>,
     eci_spans: Vec<(usize, u32)>,
-    #[allow(unused)]
-    fnc1: bool,
+    fnc1: Option<Fnc1Position>,
 }
 
 fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingError> {
@@ -102,6 +101,7 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
     let mut mode = EncodationType::Ascii;
     let mut out = Vec::with_capacity(data.len());
     let mut ecis = Vec::new();
+    let mut fnc1 = None;
 
     let add_macro_trail = match data.peek(0) {
         Some(MACRO05) => {
@@ -122,14 +122,9 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
         ecis.push((out.len(), 0));
     }
 
-    let fnc1 = data.peek(0) == Some(ascii::FNC1);
-    if fnc1 {
-        data.eat()?;
-    }
-
     while !data.is_empty() {
         let (rest, new_mode) = match mode {
-            EncodationType::Ascii => decode_ascii(data, &mut out, &mut ecis)?,
+            EncodationType::Ascii => decode_ascii(data, &mut out, &mut ecis, &mut fnc1)?,
             EncodationType::Base256 => decode_base256(data, &mut out)?,
             EncodationType::X12 => decode_x12(data, &mut out)?,
             EncodationType::Edifact => decode_edifact(data, &mut out)?,
@@ -161,6 +156,124 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
 pub fn decode_str(data: &[u8]) -> Result<String, DataDecodingError> {
     let parts = decode_parts(data, false)?;
     eci::convert(&parts.output, &parts.eci_spans)
+}
+
+/// Decode edilmiş Data Matrix mesajı ve ISO/IEC 16022:2024 Clause 12 iletim
+/// protokolü için gereken metadata.
+///
+/// [decode_data] yalnızca ham byte'ları döndürür; bu yapı ek olarak FNC1
+/// konumunu ve ECI bölümlerini korur, böylece Annex H symbology identifier ve
+/// Clause 12 iletim formatı üretilebilir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedMessage {
+    data: Vec<u8>,
+    eci_spans: Vec<(usize, u32)>,
+    fnc1: Option<Fnc1Position>,
+}
+
+impl DecodedMessage {
+    /// Decode edilmiş veri byte'larını döndürür.
+    ///
+    /// Macro başlık/kuyrukları açılmış, alan ayırıcı FNC1'ler GS (ASCII 29)
+    /// karakterine dönüştürülmüş haldedir. Format bayrağı olan FNC1 ve ECI
+    /// escape dizileri veri içinde yer almaz; bunlara [fnc1()](Self::fnc1),
+    /// [eci_spans()](Self::eci_spans) ve [transmission()](Self::transmission)
+    /// üzerinden erişilir.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Symbol'de format bayrağı olarak bulunan FNC1'in konumunu döndürür.
+    pub fn fnc1(&self) -> Option<Fnc1Position> {
+        self.fnc1
+    }
+
+    /// `(veri offset'i, ECI numarası)` çiftlerini artan offset sırasında döndürür.
+    ///
+    /// Her ECI, [data()](Self::data) çıktısında verilen offset'ten itibaren, bir
+    /// sonraki ECI'ye veya verinin sonuna kadar geçerlidir (7.3.3).
+    pub fn eci_spans(&self) -> &[(usize, u32)] {
+        &self.eci_spans
+    }
+
+    /// Symbol'de en az bir ECI codeword'ü bulunup bulunmadığını döndürür.
+    pub fn has_eci(&self) -> bool {
+        !self.eci_spans.is_empty()
+    }
+
+    /// ISO/IEC 16022:2024 Annex H symbology identifier değerini döndürür.
+    ///
+    /// ISO/IEC 15424 uyarınca iletilen verinin önüne eklenmesi gereken `]dm`
+    /// önekidir; `m` seçenek değeri Table H.1'e göre belirlenir. ECI veya format
+    /// bayrağı FNC1 içeren symbol'lerde bu önekin iletimi zorunludur (12.6).
+    pub fn symbology_identifier(&self) -> &'static str {
+        match (self.fnc1, self.has_eci()) {
+            (None, false) => "]d1",
+            (Some(Fnc1Position::First), false) => "]d2",
+            (Some(Fnc1Position::Second), false) => "]d3",
+            (None, true) => "]d4",
+            (Some(Fnc1Position::First), true) => "]d5",
+            (Some(Fnc1Position::Second), true) => "]d6",
+        }
+    }
+
+    /// ISO/IEC 16022:2024 Clause 12 uyarınca iletilecek byte dizisini üretir.
+    ///
+    /// Çıktı, Annex H symbology identifier ile başlar. Symbol ECI içeriyorsa
+    /// 12.5'teki escape protokolü uygulanır: her ECI `\nnnnnn` olarak iletilir
+    /// ve verideki her backslash (92) iki kez yazılır. Macro başlık/kuyrukları
+    /// identifier'dan sonra, verinin parçası olarak yer alır (12.4).
+    pub fn transmission(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.data.len() + 16);
+        out.extend_from_slice(self.symbology_identifier().as_bytes());
+        if self.eci_spans.is_empty() {
+            out.extend_from_slice(&self.data);
+            return out;
+        }
+        let mut spans = self.eci_spans.iter().peekable();
+        for (i, byte) in self.data.iter().copied().enumerate() {
+            while spans.peek().is_some_and(|(offset, _)| *offset == i) {
+                let Some((_, eci)) = spans.next() else {
+                    crate::invariant_violation("ECI span iterator peek sonrası boş");
+                };
+                push_eci_escape(&mut out, *eci);
+            }
+            if byte == b'\\' {
+                out.push(byte);
+            }
+            out.push(byte);
+        }
+        // Verinin sonunda bildirilen ECI'ler de iletilir.
+        for (_, eci) in spans {
+            push_eci_escape(&mut out, *eci);
+        }
+        out
+    }
+}
+
+/// ECI escape dizisini `\nnnnnn` biçiminde yazar (12.5).
+fn push_eci_escape(out: &mut Vec<u8>, eci: u32) {
+    out.push(b'\\');
+    let mut digits = [0u8; 6];
+    let mut value = eci;
+    for digit in digits.iter_mut().rev() {
+        *digit = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    out.extend_from_slice(&digits);
+}
+
+/// Data Matrix'in data codeword'lerini iletim metadata'sıyla birlikte decode eder.
+///
+/// [decode_data] fonksiyonundan farklı olarak ECI içeren symbol'leri reddetmez;
+/// ECI bölümlerini ve FNC1 konumunu [DecodedMessage] içinde döndürür.
+pub fn decode_message(data: &[u8]) -> Result<DecodedMessage, DataDecodingError> {
+    let parts = decode_parts(data, true)?;
+    Ok(DecodedMessage {
+        data: parts.output,
+        eci_spans: parts.eci_spans,
+        fnc1: parts.fnc1,
+    })
 }
 
 fn derandomize_253_state(ch: u8, pos: usize) -> u8 {
@@ -223,6 +336,7 @@ fn decode_ascii<'a>(
     mut data: Reader<'a>,
     out: &mut Vec<u8>,
     ecis: &mut Vec<(usize, u32)>,
+    fnc1: &mut Option<Fnc1Position>,
 ) -> Result<(Reader<'a>, EncodationType), DataDecodingError> {
     let mut upper_shift = false;
     while let Ok(ch) = data.eat() {
@@ -262,7 +376,20 @@ fn decode_ascii<'a>(
             ascii::LATCH_C40 => return Ok((data, EncodationType::C40)),
             ascii::LATCH_BASE256 => return Ok((data, EncodationType::Base256)),
             ascii::FNC1 => {
-                out.push(29);
+                // 7.2.4.7 ve 12.2/12.3: ilk veya ikinci symbol karakteri
+                // konumundaki ilk FNC1 format bayrağıdır ve veri olarak
+                // iletilmez. Diğer bütün FNC1'ler alan ayırıcıdır ve GS
+                // (ASCII 29) olarak iletilir.
+                let position = data.pos() - 1;
+                if fnc1.is_none() && position <= 2 {
+                    *fnc1 = Some(if position == 1 {
+                        Fnc1Position::First
+                    } else {
+                        Fnc1Position::Second
+                    });
+                } else {
+                    out.push(29);
+                }
             }
             233 => return Err(DataDecodingError::NotImplemented("Structured Append")),
             234 => return Err(DataDecodingError::NotImplemented("Reader Programming")),
@@ -512,7 +639,10 @@ fn decode_c40_like<'a>(
                             out.push(text);
                         }
                     }
-                    27 => return Err(DataDecodingError::NotImplemented("C40/Text içinde FNC1")),
+                    // 7.2.4.7: C40/Text içindeki FNC1, latch nedeniyle ilk iki
+                    // symbol karakteri konumunda olamayacağından her zaman alan
+                    // ayırıcıdır ve GS (ASCII 29) olarak iletilir (12.2).
+                    27 => out.push(29),
                     30 => upper_shift = true,
                     _ => {
                         return Err(DataDecodingError::UnexpectedCharacter(
@@ -560,11 +690,13 @@ fn decode_c40_like<'a>(
 fn test_ascii() {
     let mut out = vec![];
     let mut eci = vec![];
+    let mut fnc1 = None;
     assert_eq!(
-        decode_ascii(Reader(b"BCD\x82\xeb\x26", 0), &mut out, &mut eci),
+        decode_ascii(Reader(b"BCD\x82\xeb\x26", 0), &mut out, &mut eci, &mut fnc1),
         Ok((Reader(&[], 6), EncodationType::Ascii))
     );
     assert_eq!(&out, b"ABC00\xa5");
+    assert_eq!(fnc1, None);
 }
 
 #[test]
@@ -594,8 +726,7 @@ fn test_read_eci() -> Result<(), &'static str> {
 
     fn enc_dec(eci: u32) -> Result<u32, &'static str> {
         let symbols = crate::SymbolList::default();
-        let mut encoder =
-            GenericDataEncoder::with_size(&[], &symbols, EncodationType::all(), false);
+        let mut encoder = GenericDataEncoder::with_size(&[], &symbols, EncodationType::all(), None);
         encoder
             .write_eci(eci)
             .map_err(|_| "ECI codeword yazılamadı")?;
