@@ -6,12 +6,23 @@ use datamatrix::{
 };
 
 fn bitmap_to_svg(bitmap: Bitmap<bool>) -> Result<String, Box<dyn std::error::Error>> {
-    // SVG başlığı; path (1, 1) koordinatında başlar.
-    let mut svg: String = concat!(
-        "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\">",
-        "<path fill-rule=\"evenodd\" d=\"M1,1",
-    )
-    .to_owned();
+    // ViewBox her yanda standardın istediği bir module'lük quiet zone'u içerir;
+    // beyaz zemin transparent çıktının çevre rengine bağımlı kalmasını önler.
+    let width = bitmap.width() + 2;
+    let height = bitmap.height() + 2;
+    let mut svg = String::new();
+    write!(
+        svg,
+        concat!(
+            "<?xml version=\"1.0\"?>",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width} {height}\" ",
+            "width=\"{width}\" height=\"{height}\" shape-rendering=\"crispEdges\">",
+            "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>",
+            "<path fill=\"black\" fill-rule=\"evenodd\" d=\"M1,1",
+        ),
+        width = width,
+        height = height,
+    )?;
 
     // Path segment öğeleri SVG path söz dizimine doğrudan karşılık gelir.
     // Boyutu değiştirmek için bütün değerler sabit bir ölçekle çarpılabilir.
