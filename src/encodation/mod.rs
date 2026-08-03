@@ -29,9 +29,9 @@ pub(crate) const MACRO05_HEAD: &[u8] = b"[)>\x1E05\x1D";
 pub(crate) const MACRO06_HEAD: &[u8] = b"[)>\x1E06\x1D";
 pub(crate) const MACRO_TRAIL: &[u8] = b"\x1E\x04";
 
-// ISO/IEC 16022:2024, 6.2 d uyarınca opsiyonel özellik; encode tarafında
-// uygulanmamıştır, decoder yapılandırılmış hata ile reddeder.
-// const STRUCT_APPEND: u8 = 233;
+// Structured Append, ISO/IEC 16022:2024 6.2 d uyarınca opsiyonel özelliktir;
+// encode tarafında uygulanmamıştır, decoder yapılandırılmış hata ile reddeder.
+pub(crate) const STRUCT_APPEND: u8 = 233;
 pub(crate) const READER_PROGRAMMING: u8 = 234;
 
 pub(crate) const UNLATCH: u8 = 254;

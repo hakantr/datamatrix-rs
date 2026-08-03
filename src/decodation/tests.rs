@@ -355,6 +355,15 @@ fn decode_structured_append_rejected_cleanly() {
             "Structured Append"
         ))
     );
+    // Başlık ilk codeword'de başlamak zorundadır (7.2.4.9); sonraki
+    // konumlardaki 233 uygulanmamış özellik değil, geçersiz veridir.
+    assert_eq!(
+        super::decode_data(&[66, 233]),
+        Err(super::DataDecodingError::UnexpectedCharacter(
+            "Structured Append yalnızca ilk codeword'de başlayabilir",
+            233,
+        ))
+    );
 }
 
 #[test]

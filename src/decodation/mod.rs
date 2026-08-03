@@ -3,7 +3,7 @@
 //! `encodation` modülünün ters işlemini uygular.
 use super::encodation::{
     EncodationType, Fnc1Position, MACRO_TRAIL, MACRO05, MACRO05_HEAD, MACRO06, MACRO06_HEAD,
-    READER_PROGRAMMING, UNLATCH, ascii, edifact,
+    READER_PROGRAMMING, STRUCT_APPEND, UNLATCH, ascii, edifact,
 };
 use alloc::{string::String, vec::Vec};
 
@@ -110,6 +110,13 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
     let mut out = Vec::with_capacity(data.len());
     let mut ecis = Vec::new();
     let mut fnc1 = None;
+
+    // 7.2.4.9 ve 7.5: Structured Append başlığı symbol'ün ilk codeword'ünde
+    // başlar; opsiyonel özellik uygulanmadığı için burada yapılandırılmış hata
+    // ile reddedilir. Sonraki konumlardaki 233 geçersiz veridir.
+    if data.peek(0) == Some(STRUCT_APPEND) {
+        return Err(DataDecodingError::NotImplemented("Structured Append"));
+    }
 
     let reader_programming = if data.peek(0) == Some(READER_PROGRAMMING) {
         data.eat()?;
@@ -425,7 +432,12 @@ fn decode_ascii<'a>(
                     out.push(29);
                 }
             }
-            233 => return Err(DataDecodingError::NotImplemented("Structured Append")),
+            STRUCT_APPEND => {
+                return Err(DataDecodingError::UnexpectedCharacter(
+                    "Structured Append yalnızca ilk codeword'de başlayabilir",
+                    STRUCT_APPEND,
+                ));
+            }
             READER_PROGRAMMING => {
                 return Err(DataDecodingError::UnexpectedCharacter(
                     "Reader Programming yalnızca ilk codeword olabilir",
