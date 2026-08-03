@@ -16,12 +16,32 @@ pub use crate::decodation::{
     DataDecodingError, DecodedMessage, decode_data, decode_message, decode_str,
 };
 pub use crate::encodation::{DataEncodingError, EncodationType, Fnc1Position};
-use crate::encodation::{GenericDataEncoder, planner::optimize};
+use crate::encodation::{
+    GenericDataEncoder, READER_PROGRAMMING, ascii, planner::optimize, write_eci_codewords,
+};
 
 use super::{SymbolList, SymbolSize};
 
 #[cfg(test)]
 use pretty_assertions::assert_eq;
+
+/// Bir Data Matrix mesajındaki veri ve ASCII-mode denetim bölümleri.
+///
+/// Bu yapı, ECI'nin mesaj içinde birden fazla kez veya veri sonrasında; FNC1'in
+/// ise alan ayırıcı olarak sonraki symbol karakteri konumlarında encode edilmesini
+/// sağlar. `ReaderProgramming` yalnızca ilk codeword olabilir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataMatrixSegment<'a> {
+    /// Varsayılan veya en son seçilmiş ECI altında yorumlanacak byte'lar.
+    Data(&'a [u8]),
+    /// 0..=999999 aralığındaki ECI assignment numarasını etkinleştirir.
+    Eci(u32),
+    /// FNC1 codeword yazar. İlk/ikinci konumda format bayrağı, daha sonra GS alan
+    /// ayırıcıdır (7.2.4.7).
+    Fnc1,
+    /// Reader Programming mesajını işaretler; yalnızca ilk codeword olabilir.
+    ReaderProgramming,
+}
 
 /// Input'u Data Matrix data codeword'lerine encode eder.
 pub fn encode_data(
@@ -31,7 +51,173 @@ pub fn encode_data(
     enabled_modes: impl Into<FlagSet<EncodationType>>,
     use_macros: bool,
 ) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
-    encode_data_internal(data, symbol_list, eci, enabled_modes, use_macros, None)
+    encode_data_internal(
+        data,
+        symbol_list,
+        eci,
+        enabled_modes,
+        use_macros,
+        None,
+        false,
+    )
+}
+
+/// Denetim bölümleri içeren bir mesajı Data Matrix data codeword'lerine encode eder.
+///
+/// ECI yalnızca ASCII encodation'dan çağrılabildiği için her [`Data`](DataMatrixSegment::Data)
+/// bölümü ASCII scheme ile encode edilir. Rakam çiftleri ve extended ASCII'nin
+/// standart compaction kuralları uygulanır. Tek ve başlangıç ECI'li veri için
+/// bütün mode'ları optimize eden [`encode_data`] daha küçük sonuç verebilir.
+pub fn encode_data_segments(
+    segments: &[DataMatrixSegment<'_>],
+    symbol_list: &SymbolList,
+) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
+    encode_data_segments_internal(segments, symbol_list, None, false)
+}
+
+pub(crate) fn encode_data_segments_internal(
+    segments: &[DataMatrixSegment<'_>],
+    symbol_list: &SymbolList,
+    fnc1: Option<Fnc1Position>,
+    reader_programming: bool,
+) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
+    if symbol_list.is_empty() {
+        return Err(DataEncodingError::SymbolListEmpty);
+    }
+
+    let mut codewords = Vec::new();
+    if reader_programming {
+        codewords.push(READER_PROGRAMMING);
+    }
+
+    let mut fnc1_second_pending = false;
+    match fnc1 {
+        Some(Fnc1Position::First) if reader_programming => {
+            return Err(DataEncodingError::InvalidControlPosition(
+                "FNC1 ve Reader Programming aynı ilk konumu kullanamaz",
+            ));
+        }
+        Some(Fnc1Position::First) => codewords.push(ascii::FNC1),
+        Some(Fnc1Position::Second) if reader_programming => codewords.push(ascii::FNC1),
+        Some(Fnc1Position::Second) => fnc1_second_pending = true,
+        None => (),
+    }
+
+    for segment in segments {
+        match *segment {
+            DataMatrixSegment::Data(mut bytes) => {
+                if fnc1_second_pending && !bytes.is_empty() {
+                    let consumed = write_first_ascii_codeword(bytes, &mut codewords)?;
+                    let Some(rest) = bytes.get(consumed..) else {
+                        crate::invariant_violation(
+                            "ilk ASCII codeword'ün tükettiği byte sayısı input'u aştı",
+                        );
+                    };
+                    bytes = rest;
+                    codewords.push(ascii::FNC1);
+                    fnc1_second_pending = false;
+                }
+                write_ascii_codewords(bytes, &mut codewords);
+            }
+            DataMatrixSegment::Eci(eci) => {
+                if fnc1_second_pending {
+                    return Err(DataEncodingError::InvalidControlPosition(
+                        "ikinci konumdaki FNC1'den önce ECI kullanılamaz",
+                    ));
+                }
+                write_eci_codewords(&mut codewords, eci)?;
+            }
+            DataMatrixSegment::Fnc1 => {
+                if fnc1_second_pending {
+                    return Err(DataEncodingError::InvalidControlPosition(
+                        "ikinci konumdaki FNC1 için önce bir ASCII data codeword gerekir",
+                    ));
+                }
+                codewords.push(ascii::FNC1);
+            }
+            DataMatrixSegment::ReaderProgramming => {
+                if fnc1_second_pending || !codewords.is_empty() {
+                    return Err(DataEncodingError::InvalidControlPosition(
+                        "Reader Programming ilk codeword olmalıdır",
+                    ));
+                }
+                codewords.push(READER_PROGRAMMING);
+            }
+        }
+    }
+
+    if fnc1_second_pending {
+        return Err(DataEncodingError::InvalidControlPosition(
+            "ikinci konumdaki FNC1 için bir ASCII data codeword gerekir",
+        ));
+    }
+
+    pad_ascii_codewords(codewords, symbol_list)
+}
+
+fn write_first_ascii_codeword(
+    data: &[u8],
+    codewords: &mut Vec<u8>,
+) -> Result<usize, DataEncodingError> {
+    match data {
+        [a, b, ..] if a.is_ascii_digit() && b.is_ascii_digit() => {
+            codewords.push((a - b'0') * 10 + (b - b'0') + 130);
+            Ok(2)
+        }
+        [ch @ 0..=127, ..] => {
+            codewords.push(ch + 1);
+            Ok(1)
+        }
+        _ => Err(DataEncodingError::InvalidControlPosition(
+            "ikinci konumdaki FNC1 öncesindeki veri tek ASCII codeword olmalıdır",
+        )),
+    }
+}
+
+fn write_ascii_codewords(mut data: &[u8], codewords: &mut Vec<u8>) {
+    while let Some((ch, rest)) = data.split_first() {
+        if let [a, b, tail @ ..] = data
+            && a.is_ascii_digit()
+            && b.is_ascii_digit()
+        {
+            codewords.push((a - b'0') * 10 + (b - b'0') + 130);
+            data = tail;
+        } else {
+            match ch {
+                0..=127 => codewords.push(ch + 1),
+                128..=255 => {
+                    codewords.push(ascii::UPPER_SHIFT);
+                    codewords.push(ch - 127);
+                }
+            }
+            data = rest;
+        }
+    }
+}
+
+fn pad_ascii_codewords(
+    mut codewords: Vec<u8>,
+    symbol_list: &SymbolList,
+) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
+    let size = symbol_list
+        .first_symbol_big_enough_for(codewords.len())
+        .ok_or(DataEncodingError::TooMuchOrIllegalData)?;
+    let mut left = size.num_data_codewords() - codewords.len();
+    if left > 0 {
+        codewords.push(ascii::PAD);
+        left -= 1;
+    }
+    for _ in 0..left {
+        let pos = codewords.len() + 1;
+        let pseudo_random = (((149 * pos) % 253) + 1) as u16;
+        let randomized = ascii::PAD as u16 + pseudo_random;
+        codewords.push(if randomized <= 254 {
+            randomized as u8
+        } else {
+            (randomized - 254) as u8
+        });
+    }
+    Ok((codewords, size))
 }
 
 pub(crate) fn encode_data_internal(
@@ -41,8 +227,12 @@ pub(crate) fn encode_data_internal(
     enabled_modes: impl Into<FlagSet<EncodationType>>,
     use_macros: bool,
     fnc1: Option<Fnc1Position>,
+    reader_programming: bool,
 ) -> Result<(Vec<u8>, SymbolSize), DataEncodingError> {
     let mut encoder = GenericDataEncoder::with_size(data, symbol_list, enabled_modes.into(), fnc1);
+    if reader_programming {
+        encoder.write_reader_programming()?;
+    }
     // Macro'lar ilk symbol karakteri konumunu kullanır (7.2.4.8); FNC1 ile
     // birlikte kullanılamazlar.
     if use_macros && fnc1.is_none() {
@@ -109,114 +299,15 @@ pub fn encodation_plan(
 pub fn utf8_to_latin1(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len());
     for ch in s.chars() {
-        let latin1_ch = match ch {
-            ch @ ' '..='~' => ch as u8,
-            '\u{00a0}' => 160,
-            '¡' => 161,
-            '¢' => 162,
-            '£' => 163,
-            '¤' => 164,
-            '¥' => 165,
-            '¦' => 166,
-            '§' => 167,
-            '¨' => 168,
-            '©' => 169,
-            'ª' => 170,
-            '«' => 171,
-            '¬' => 172,
-            '\u{00AD}' => 173,
-            '®' => 174,
-            '¯' => 175,
-            '°' => 176,
-            '±' => 177,
-            '²' => 178,
-            '³' => 179,
-            '´' => 180,
-            'µ' => 181,
-            '¶' => 182,
-            '·' => 183,
-            '¸' => 184,
-            '¹' => 185,
-            'º' => 186,
-            '»' => 187,
-            '¼' => 188,
-            '½' => 189,
-            '¾' => 190,
-            '¿' => 191,
-            'À' => 192,
-            'Á' => 193,
-            'Â' => 194,
-            'Ã' => 195,
-            'Ä' => 196,
-            'Å' => 197,
-            'Æ' => 198,
-            'Ç' => 199,
-            'È' => 200,
-            'É' => 201,
-            'Ê' => 202,
-            'Ë' => 203,
-            'Ì' => 204,
-            'Í' => 205,
-            'Î' => 206,
-            'Ï' => 207,
-            'Ð' => 208,
-            'Ñ' => 209,
-            'Ò' => 210,
-            'Ó' => 211,
-            'Ô' => 212,
-            'Õ' => 213,
-            'Ö' => 214,
-            '×' => 215,
-            'Ø' => 216,
-            'Ù' => 217,
-            'Ú' => 218,
-            'Û' => 219,
-            'Ü' => 220,
-            'Ý' => 221,
-            'Þ' => 222,
-            'ß' => 223,
-            'à' => 224,
-            'á' => 225,
-            'â' => 226,
-            'ã' => 227,
-            'ä' => 228,
-            'å' => 229,
-            'æ' => 230,
-            'ç' => 231,
-            'è' => 232,
-            'é' => 233,
-            'ê' => 234,
-            'ë' => 235,
-            'ì' => 236,
-            'í' => 237,
-            'î' => 238,
-            'ï' => 239,
-            'ð' => 240,
-            'ñ' => 241,
-            'ò' => 242,
-            'ó' => 243,
-            'ô' => 244,
-            'õ' => 245,
-            'ö' => 246,
-            '÷' => 247,
-            'ø' => 248,
-            'ù' => 249,
-            'ú' => 250,
-            'û' => 251,
-            'ü' => 252,
-            'ý' => 253,
-            'þ' => 254,
-            'ÿ' => 255,
-            _ => return None,
-        };
-        out.push(latin1_ch);
+        out.push(u8::try_from(u32::from(ch)).ok()?);
     }
     Some(out)
 }
 
-/// Latin-1 encoded string'i UTF-8 string'e dönüştürmeyi dener.
+/// Latin-1 encoded string'i UTF-8 string'e dönüştürür.
 ///
-/// Input geçersiz Latin-1 karakterleri içerirse başarısız olur.
+/// ISO/IEC 8859-1'in C0/C1 kontrol karakterleri dahil bütün byte değerleri
+/// geçerlidir; bu nedenle dönüşüm yalnızca API tutarlılığı için `Option` döndürür.
 pub fn latin1_to_utf8(latin1: &[u8]) -> Option<String> {
     let mut out = String::with_capacity(latin1.len());
     latin1_to_utf8_mut(latin1, &mut out)?;
@@ -225,107 +316,7 @@ pub fn latin1_to_utf8(latin1: &[u8]) -> Option<String> {
 
 pub(crate) fn latin1_to_utf8_mut(latin1: &[u8], out: &mut String) -> Option<()> {
     for ch in latin1.iter().copied() {
-        let utf_ch = match ch {
-            ch @ b' '..=b'~' => ch as char,
-            160 => '\u{00a0}',
-            161 => '¡',
-            162 => '¢',
-            163 => '£',
-            164 => '¤',
-            165 => '¥',
-            166 => '¦',
-            167 => '§',
-            168 => '¨',
-            169 => '©',
-            170 => 'ª',
-            171 => '«',
-            172 => '¬',
-            173 => '\u{00AD}',
-            174 => '®',
-            175 => '¯',
-            176 => '°',
-            177 => '±',
-            178 => '²',
-            179 => '³',
-            180 => '´',
-            181 => 'µ',
-            182 => '¶',
-            183 => '·',
-            184 => '¸',
-            185 => '¹',
-            186 => 'º',
-            187 => '»',
-            188 => '¼',
-            189 => '½',
-            190 => '¾',
-            191 => '¿',
-            192 => 'À',
-            193 => 'Á',
-            194 => 'Â',
-            195 => 'Ã',
-            196 => 'Ä',
-            197 => 'Å',
-            198 => 'Æ',
-            199 => 'Ç',
-            200 => 'È',
-            201 => 'É',
-            202 => 'Ê',
-            203 => 'Ë',
-            204 => 'Ì',
-            205 => 'Í',
-            206 => 'Î',
-            207 => 'Ï',
-            208 => 'Ð',
-            209 => 'Ñ',
-            210 => 'Ò',
-            211 => 'Ó',
-            212 => 'Ô',
-            213 => 'Õ',
-            214 => 'Ö',
-            215 => '×',
-            216 => 'Ø',
-            217 => 'Ù',
-            218 => 'Ú',
-            219 => 'Û',
-            220 => 'Ü',
-            221 => 'Ý',
-            222 => 'Þ',
-            223 => 'ß',
-            224 => 'à',
-            225 => 'á',
-            226 => 'â',
-            227 => 'ã',
-            228 => 'ä',
-            229 => 'å',
-            230 => 'æ',
-            231 => 'ç',
-            232 => 'è',
-            233 => 'é',
-            234 => 'ê',
-            235 => 'ë',
-            236 => 'ì',
-            237 => 'í',
-            238 => 'î',
-            239 => 'ï',
-            240 => 'ð',
-            241 => 'ñ',
-            242 => 'ò',
-            243 => 'ó',
-            244 => 'ô',
-            245 => 'õ',
-            246 => 'ö',
-            247 => '÷',
-            248 => 'ø',
-            249 => 'ù',
-            250 => 'ú',
-            251 => 'û',
-            252 => 'ü',
-            253 => 'ý',
-            254 => 'þ',
-            255 => 'ÿ',
-            _ => return None,
-        };
-        out.push(utf_ch);
+        out.push(char::from(ch));
     }
     Some(())
 }
@@ -351,5 +342,42 @@ fn test_macro() -> Result<(), DataEncodingError> {
         true,
     )?;
     assert_eq!(macro06.0, vec![MACRO06, 130 + 11, PAD]);
+    Ok(())
+}
+
+#[test]
+fn macro_body_backup_never_reintroduces_the_trailer() -> Result<(), DataEncodingError> {
+    use alloc::vec;
+
+    for (head, macro_codeword) in [
+        (crate::encodation::MACRO05_HEAD, crate::encodation::MACRO05),
+        (crate::encodation::MACRO06_HEAD, crate::encodation::MACRO06),
+    ] {
+        for len in 0..=64 {
+            let mut input = Vec::new();
+            input.extend_from_slice(head);
+            input.extend_from_slice(&vec![b'a'; len]);
+            input.extend_from_slice(crate::encodation::MACRO_TRAIL);
+
+            let (codewords, _) = encode_data(
+                &input,
+                &SymbolList::default(),
+                None,
+                EncodationType::all(),
+                true,
+            )?;
+            assert_eq!(codewords.first(), Some(&macro_codeword), "body len={len}");
+            assert_eq!(decode_data(&codewords), Ok(input), "body len={len}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn latin1_helpers_cover_all_byte_values() -> Result<(), &'static str> {
+    let bytes: Vec<u8> = (0..=u8::MAX).collect();
+    let text = latin1_to_utf8(&bytes).ok_or("ISO/IEC 8859-1 dönüşümü başarısız")?;
+    assert_eq!(utf8_to_latin1(&text), Some(bytes));
+    assert_eq!(decode_str(&[11]), Ok("\n".into()));
     Ok(())
 }

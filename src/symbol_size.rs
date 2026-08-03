@@ -161,6 +161,10 @@ impl SymbolList {
                     // en küçük symbol size değerini bulur.
                     s.capacity().min >= input_len
                 })
+                .or_else(|| self.symbols.iter().next_back())
+                // Base256 kapasitesini aşan input, rakam çiftleri veya C40/Text
+                // compaction ile yine de sığabilir. Böyle bir durumda en büyük
+                // izinli symbol güvenli rezervasyon üst sınırıdır.
                 .map(SymbolSize::num_data_codewords)
         }
     }

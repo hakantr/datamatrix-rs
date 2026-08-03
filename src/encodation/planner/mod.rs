@@ -57,6 +57,20 @@ trait Plan: Clone {
     /// Geçerli cost'u döndürür.
     fn cost(&self) -> Frac;
 
+    /// Input sonundaki plan geçerliyse kesin bitiş cost'unu döndürür.
+    ///
+    /// Bazı encodation mode'larında kesirli bir grubun her konumda geçerli bir
+    /// bitişi yoktur. Bu ayrım, standarda aykırı dolgu üretmek yerine planner'ın
+    /// daha önceki geçerli bir mode switch'i seçmesini sağlar.
+    fn end_cost(&self) -> Option<Frac> {
+        Some(self.cost())
+    }
+
+    /// Dominance pruning sırasında korunması gereken mode-içi durum.
+    fn state_key(&self) -> usize {
+        0
+    }
+
     /// Varsa sıradaki karakteri okur; başarısız olursa None döndürür.
     fn step(&mut self) -> Option<StepResult>;
 

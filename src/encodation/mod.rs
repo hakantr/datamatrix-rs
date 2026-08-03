@@ -29,10 +29,10 @@ pub(crate) const MACRO05_HEAD: &[u8] = b"[)>\x1E05\x1D";
 pub(crate) const MACRO06_HEAD: &[u8] = b"[)>\x1E06\x1D";
 pub(crate) const MACRO_TRAIL: &[u8] = b"\x1E\x04";
 
-// ISO/IEC 16022:2024, 6.2 d uyarınca opsiyonel özellikler; encode tarafında
-// uygulanmamıştır, decoder bunları yapılandırılmış hata ile reddeder.
+// ISO/IEC 16022:2024, 6.2 d uyarınca opsiyonel özellik; encode tarafında
+// uygulanmamıştır, decoder yapılandırılmış hata ile reddeder.
 // const STRUCT_APPEND: u8 = 233;
-// const READER_PROGRAMMING: u8 = 234;
+pub(crate) const READER_PROGRAMMING: u8 = 234;
 
 pub(crate) const UNLATCH: u8 = 254;
 
@@ -45,6 +45,7 @@ pub enum DataEncodingError {
     TooMuchOrIllegalData,
     SymbolListEmpty,
     InvalidEci(u32),
+    InvalidControlPosition(&'static str),
 }
 
 impl core::fmt::Display for DataEncodingError {
@@ -55,6 +56,12 @@ impl core::fmt::Display for DataEncodingError {
             }
             Self::SymbolListEmpty => f.write_str("izin verilen Data Matrix symbol listesi boş"),
             Self::InvalidEci(eci) => write!(f, "ECI değeri 0..=999999 aralığında olmalı: {eci}"),
+            Self::InvalidControlPosition(control) => {
+                write!(
+                    f,
+                    "Data Matrix denetim codeword'ü geçersiz konumda: {control}"
+                )
+            }
         }
     }
 }
@@ -73,6 +80,32 @@ pub enum Fnc1Position {
     First,
     /// FNC1 ikinci symbol karakteri konumundadır (endüstri formatı).
     Second,
+}
+
+pub(crate) fn write_eci_codewords(
+    codewords: &mut Vec<u8>,
+    mut eci: u32,
+) -> Result<(), DataEncodingError> {
+    if eci > 999_999 {
+        return Err(DataEncodingError::InvalidEci(eci));
+    }
+    codewords.push(ascii::ECI);
+    match eci {
+        0..=126 => codewords.push(eci as u8 + 1),
+        127..=16382 => {
+            eci -= 127;
+            codewords.push((eci / 254 + 128) as u8);
+            codewords.push((eci % 254 + 1) as u8);
+        }
+        16383..=999_999 => {
+            eci -= 16383;
+            codewords.push((eci / 64516 + 192) as u8);
+            codewords.push(((eci / 254) % 254 + 1) as u8);
+            codewords.push((eci % 254 + 1) as u8);
+        }
+        _ => return Err(DataEncodingError::InvalidEci(eci)),
+    }
+    Ok(())
 }
 
 trait EncodingContext {
@@ -254,6 +287,11 @@ impl<'a> GenericDataEncoder<'a> {
                 };
                 self.codewords.push(cw);
                 self.data = body;
+                // `backup`, kalan verinin `input` diliminin bir suffix'i olduğu
+                // değişmezine dayanır. Macro başlığı ve kuyruğu çıkarıldıktan sonra
+                // bu referans da gövdeye taşınmalıdır; aksi halde geri alma macro
+                // kuyruğundaki EOT byte'ını veri olarak yeniden içeri alabilir.
+                self.input = body;
                 break;
             }
         }
@@ -262,11 +300,16 @@ impl<'a> GenericDataEncoder<'a> {
     /// FNC1 codeword'ünü ikinci symbol karakteri konumuna yerleştirir
     /// (ISO/IEC 16022:2024, 7.2.4.7 ve 12.3).
     ///
-    /// İlk symbol karakteri konumu tek codeword'lük ASCII verisi (tek karakter
-    /// veya rakam çifti) içermelidir; ilk veri karakteri burada tüketilir ve
-    /// FNC1 hemen arkasına yazılır. Veri boşsa veya ilk karakter tek ASCII
-    /// codeword ile encode edilemiyorsa (extended ASCII) hata döndürür.
+    /// İlk symbol karakteri normal mesajda tek codeword'lük ASCII verisi (tek
+    /// karakter veya rakam çifti), Reader Programming mesajında codeword 234
+    /// olmalıdır. Normal mesajın ilk veri karakteri burada tüketilir ve FNC1
+    /// hemen arkasına yazılır. Veri boşsa veya ilk karakter tek ASCII codeword
+    /// ile encode edilemiyorsa (extended ASCII) hata döndürür.
     pub fn write_fnc1_second(&mut self) -> Result<(), DataEncodingError> {
+        if self.codewords.as_slice() == [READER_PROGRAMMING] {
+            self.codewords.push(FNC1);
+            return Ok(());
+        }
         if !self.codewords.is_empty() {
             crate::invariant_violation(
                 "ikinci konumdaki FNC1 diğer codeword'lerden önce yazılmalıdır",
@@ -289,26 +332,18 @@ impl<'a> GenericDataEncoder<'a> {
         Ok(())
     }
 
-    pub fn write_eci(&mut self, mut c: u32) -> Result<(), DataEncodingError> {
-        if c > 999_999 {
-            return Err(DataEncodingError::InvalidEci(c));
+    pub fn write_eci(&mut self, eci: u32) -> Result<(), DataEncodingError> {
+        write_eci_codewords(&mut self.codewords, eci)
+    }
+
+    /// Reader Programming işaretini ilk symbol karakteri olarak yazar.
+    pub fn write_reader_programming(&mut self) -> Result<(), DataEncodingError> {
+        if !self.codewords.is_empty() {
+            return Err(DataEncodingError::InvalidControlPosition(
+                "Reader Programming ilk codeword olmalıdır",
+            ));
         }
-        self.codewords.push(ascii::ECI);
-        match c {
-            0..=126 => self.codewords.push(c as u8 + 1),
-            127..=16382 => {
-                c -= 127;
-                self.codewords.push((c / 254 + 128) as u8);
-                self.codewords.push((c % 254 + 1) as u8);
-            }
-            16383..=999999 => {
-                c -= 16383;
-                self.codewords.push((c / 64516 + 192) as u8);
-                self.codewords.push(((c / 254) % 254 + 1) as u8);
-                self.codewords.push((c % 254 + 1) as u8);
-            }
-            _ => return Err(DataEncodingError::InvalidEci(c)),
-        }
+        self.codewords.push(READER_PROGRAMMING);
         Ok(())
     }
 

@@ -151,7 +151,9 @@ impl<'a> GenericPlan<'a> {
             };
         }
 
-        // ASCII'ye geçiş ekler.
+        // ASCII'ye geçiş ekler. C40/Text bitişindeki zorunlu ASCII kuyruğu mode
+        // planına ayrıca eklenmez; ilgili EOD kuralı tarafından fiyatlandırılır.
+        // Böylece yalnızca tek mode isteyen çağrıların kısıtı da korunur.
         if !self.is_ascii() && enabled_modes.contains(EncodationType::Ascii) {
             add_switch!(AsciiPlan, Ascii, 0);
         }
@@ -225,6 +227,14 @@ impl<'a> Plan for GenericPlan<'a> {
     fn cost(&self) -> Frac {
         // Yalnızca önceki mode'ların cost'larını ekler.
         dispatch!(self, pl => pl.cost() + self.extra)
+    }
+
+    fn end_cost(&self) -> Option<Frac> {
+        dispatch!(self, pl => pl.end_cost().map(|cost| cost + self.extra))
+    }
+
+    fn state_key(&self) -> usize {
+        dispatch!(self, pl => pl.state_key())
     }
 
     fn step(&mut self) -> Option<StepResult> {

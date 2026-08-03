@@ -4,7 +4,7 @@ use flagset::FlagSet;
 
 use super::{DataEncodingError, EncodingContext, encodation_type::EncodationType};
 use crate::data::encode_data;
-use crate::symbol_size::SymbolList;
+use crate::symbol_size::{SymbolList, SymbolSize};
 
 #[cfg(test)]
 use pretty_assertions::assert_eq;
@@ -172,23 +172,35 @@ fn test_c40_special_case_a() {
 }
 
 #[test]
-fn test_c40_special_case_b() {
+fn test_c40_special_case_b() -> Result<(), DataEncodingError> {
     // "b" durumu: Sona shift 0 eklenir ve Unlatch gerekmez.
-    assert_eq!(
-        enc(b"\x83)nnnnnnnn\xb8"),
-        vec![235, 4, 42, 239, 173, 20, 173, 20, 172, 250, 189, 97]
-    );
+    let output = encode_data(
+        b"AB",
+        &SymbolSize::Square10.into(),
+        None,
+        EncodationType::C40,
+        false,
+    )?
+    .0;
+    assert_eq!(output, vec![230, 89, 217]);
+    assert_eq!(crate::decodation::decode_data(&output), Ok(b"AB".to_vec()));
+    Ok(())
 }
 
 #[test]
-fn test_c40_special_case_c() {
+fn test_c40_special_case_c() -> Result<(), DataEncodingError> {
     // "c" durumu: Unlatch uygulanır ve son karakter ASCII olarak yazılır.
-    assert_eq!(
-        enc(b"?      T        \xda  \x10"),
-        vec![
-            64, 230, 19, 60, 19, 60, 206, 188, 19, 60, 19, 60, 11, 24, 19, 57, 254, 17
-        ],
-    );
+    let output = encode_data(
+        b"A",
+        &SymbolSize::Square10.into(),
+        None,
+        EncodationType::C40,
+        false,
+    )?
+    .0;
+    assert_eq!(output, vec![230, 254, 66]);
+    assert_eq!(crate::decodation::decode_data(&output), Ok(b"A".to_vec()));
+    Ok(())
 }
 
 #[test]
@@ -198,58 +210,112 @@ fn test_c40_special_case_d() {
 }
 
 #[test]
+fn test_c40_single_value_tail_uses_ascii_without_phantom_values() -> Result<(), DataEncodingError> {
+    let output = encode_data(
+        b"ABCDEFGHIJKLM",
+        &SymbolSize::Square16.into(),
+        None,
+        EncodationType::C40,
+        false,
+    )?
+    .0;
+    assert_eq!(
+        output.get(output.len().saturating_sub(3)..),
+        Some([254, 78, 129].as_slice())
+    );
+    assert_eq!(
+        crate::decodation::decode_data(&output),
+        Ok(b"ABCDEFGHIJKLM".to_vec())
+    );
+
+    let output = encode_data(
+        b"abcdefghijklm",
+        &SymbolSize::Square16.into(),
+        None,
+        EncodationType::Text,
+        false,
+    )?
+    .0;
+    assert_eq!(
+        output.get(output.len().saturating_sub(3)..),
+        Some([254, 110, 129].as_slice())
+    );
+    assert_eq!(
+        crate::decodation::decode_data(&output),
+        Ok(b"abcdefghijklm".to_vec())
+    );
+    Ok(())
+}
+
+#[test]
 fn test_c40_special_case2_d() {
-    // "d" durumu: Unlatch atlanır ve son iki rakam ASCII olarak yazılır.
+    // Kural d yalnızca tek bir C40 data value için örtük UNLATCH'e izin verir.
+    // İki rakam tek ASCII codeword olsa da iki data karakteridir; açık UNLATCH
+    // gerekir ve bu nedenle bir sonraki symbol size seçilir.
     assert_eq!(
         enc(b" 9 aaabbb00"),
-        vec![239, 20, 204, 89, 191, 96, 40, 130]
+        vec![239, 20, 204, 89, 191, 96, 40, 254, 130, 129]
     );
 }
 
 #[test]
 fn test_c40_special_cases2() {
-    // Kullanılabilir alan > 2 ve kalan = 2 ise üçlü, 7.2.5.3 b'deki gibi Shift 1
-    // ile doldurulur ve unlatch uygulanır: son çift (a, i, Shift 1) = (90, 241).
+    // Kural b yalnızca symbol'de tam iki codeword kaldığında uygulanabilir.
+    // Planner ilk iki karakteri ASCII bırakarak Text üçlülerini hizalar ve sonda
+    // geçersiz ara dolgu kullanmadan tam üçlü sınırında döner.
+    let output = enc(b"aimaimaimaimaimaimai");
     assert_eq!(
-        enc(b"aimaimaimaimaimaimai"),
+        output,
         vec![
-            239, 91, 11, 91, 11, 91, 11, 91, 11, 91, 11, 91, 11, 90, 241, 254
+            98, 106, 239, 164, 199, 164, 199, 164, 199, 164, 199, 164, 199, 164, 199, 254
         ]
     );
+    assert_eq!(
+        crate::decodation::decode_data(&output),
+        Ok(b"aimaimaimaimaimaimai".to_vec())
+    );
 }
 
 #[test]
-fn test_c40_rule_c_preempt_no_orphan_shift() {
-    // Son karakter iki değerliyse ('!' = Shift 2 + 0) ve üçlü sınırını
-    // bölecekse karakter C40'a hiç sokulmaz: kalan iki değer 7.2.5.3 b'deki
-    // gibi Shift 1 ile kapatılır ((A, B, Shift1) = 89, 217), UNLATCH ve ASCII
-    // izler. Eski davranış shift değerini üçlüde askıda bırakıyordu (89, 218).
+fn test_c40_incomplete_shift_cannot_be_padded_before_unlatch() {
+    // "AB!" dört C40 value üretir. Yalnızca C40 etkinse üçlü sınırında ASCII'ye
+    // dönülemez; kural b'yi ara dolgu gibi kullanmak yasaktır.
     assert_eq!(
-        enc_mode(b"AB!", EncodationType::C40),
-        vec![230, 89, 217, 254, 34]
+        encode_data(
+            b"AB!",
+            &SymbolList::default(),
+            None,
+            EncodationType::C40,
+            false,
+        ),
+        Err(DataEncodingError::TooMuchOrIllegalData)
     );
-    // Üretilen akış sondaki Shift 1 pad'iyle birlikte doğru decode edilir.
+    // Önceki encoder'ın ürettiği akışta Shift 1 pad'den sonra açık UNLATCH
+    // bulunduğundan decoder bunu da geçersiz sayar.
     assert_eq!(
         crate::decodation::decode_data(&[230, 89, 217, 254, 34]),
-        Ok(b"AB!".to_vec())
+        Err(crate::data::DataDecodingError::UnexpectedEnd)
     );
 }
 
 #[test]
-fn test_c40_rule_d_preempt_no_orphan_shift() {
-    // Rule d'nin (7.2.5.3 d) tam-sığma çerçevesi: son üçlüden sonra tek yuva
-    // kalır. İki değerli son karakter ('!') üçlüyü böleceğine geri alınır; üçlü
-    // Shift 1 pad ile kapatılır ((A, B, Shift1) = 89, 217) ve '!' örtük unlatch
-    // ile son yuvaya ASCII olarak yazılır. Eski davranış üçlüde Shift 2'yi
-    // askıda bırakıyordu (89, 218). Kural, "(data character)" ön koşulunu içerir.
+fn test_c40_rule_d_does_not_apply_to_shifted_character() {
+    // Kural d yalnızca tek C40 value'luk bir data karakterine uygulanır. İki
+    // value'luk '!' için daha önceki üçlü sınırında ASCII'ye dönmek gerekir;
+    // yalnızca C40 seçimi bu nedenle mümkün değildir.
     assert_eq!(
-        enc_mode(b"AIMAIMAB!", EncodationType::C40),
-        vec![230, 91, 11, 91, 11, 89, 217, 34]
+        encode_data(
+            b"AIMAIMAB!",
+            &SymbolList::default(),
+            None,
+            EncodationType::C40,
+            false,
+        ),
+        Err(DataEncodingError::TooMuchOrIllegalData)
     );
-    // Örtük unlatch'li akış doğru decode edilir.
     assert_eq!(
         crate::decodation::decode_data(&[230, 91, 11, 91, 11, 89, 217, 34]),
-        Ok(b"AIMAIMAB!".to_vec())
+        Err(crate::data::DataDecodingError::UnexpectedEnd)
     );
 }
 
@@ -465,8 +531,8 @@ fn test_edifact_8() {
         enc(b".XXX.XXX.XXX.XXX.XXX.XXX.\xFCXX.XXX.XXX.XXX.XXX.XXX.XXX"),
         vec![
             240, 185, 134, 24, 185, 134, 24, 185, 134, 24, 185, 134, 24, 185, 134, 24, 185, 134,
-            24, 185, 240, 235, 125, 240, 97, 139, 152, 97, 139, 152, 97, 139, 152, 97, 139, 152,
-            97, 139, 152, 97, 139, 152, 89, 89
+            24, 124, 47, 235, 125, 240, 97, 139, 152, 97, 139, 152, 97, 139, 152, 97, 139, 152, 97,
+            139, 152, 97, 139, 152, 89, 89
         ]
     );
 }
@@ -523,18 +589,16 @@ fn test_base256_5() {
 
 #[test]
 fn test_base256_6() {
+    let input = b"\xab\xe4\xf6\xfc\xe9\xbb 23\xa3 1234567890123456789";
+    let output = enc(input);
     assert_eq!(
-        enc(b"\xab\xe4\xf6\xfc\xe9\xbb 23\xa3 1234567890123456789"),
+        output,
         vec![
             231, 55, 108, 59, 226, 126, 1, 104, 99, 10, 161, 167, 185, 142, 164, 186, 208, 220,
             142, 164, 186, 208, 58, 129, 59, 209, 104, 254, 150, 45
-        ],
-        // Alternatif:
-        // vec![
-        //     231, 51, 108, 59, 226, 126, 1, 104, 99, 153, 235, 36, 33, 142, 164,
-        //     186, 208, 220, 142, 164, 186, 208, 58, 129, 59, 209, 104, 254, 150, 45,
-        // ]
+        ]
     );
+    assert_eq!(crate::decodation::decode_data(&output), Ok(input.to_vec()));
 }
 
 #[test]
@@ -622,11 +686,15 @@ fn test_unlatching_from_text() {
 
 #[test]
 fn test_hello_world() {
-    // Sondaki iki değerlik kalıntı Shift 1 pad ile üçlüye tamamlanır (bkz. 7.2.5.3 b).
+    // Text planı geçerli bir tam üçlü bitişi sağlayacak biçimde seçilir.
     let out = enc(b"Hello World!");
     assert_eq!(
         out,
-        vec![73, 239, 116, 130, 175, 123, 148, 64, 158, 233, 254, 34]
+        vec![239, 13, 211, 160, 69, 19, 40, 179, 242, 106, 105, 254]
+    );
+    assert_eq!(
+        crate::decodation::decode_data(&out),
+        Ok(b"Hello World!".to_vec())
     );
 }
 
@@ -648,7 +716,7 @@ fn test_ascii_short() {
 fn test_bug_1664266_1() {
     assert_eq!(
         enc(b"CREX-TAN:h"),
-        vec![68, 83, 70, 89, 46, 85, 66, 79, 59, 105],
+        vec![68, 240, 72, 86, 45, 80, 19, 186, 105, 129],
         // Alternatif: C40
         // vec![230, 104, 235, 231, 117, 208, 140, 8, 155, 105],
         // Alternatif: EDIFACT
@@ -660,7 +728,7 @@ fn test_bug_1664266_1() {
 fn test_bug_1664266_2() {
     assert_eq!(
         enc(b"CREX-TAN:hh"),
-        vec![68, 83, 70, 89, 46, 85, 66, 79, 59, 105, 105, 129],
+        vec![68, 240, 72, 86, 45, 80, 19, 186, 105, 105],
         // Alternatif: EDIFACT
         // vec![230, 104, 235, 231, 117, 208, 140, 8, 155, 50, 89, 254],
         // vec![240, 13, 33, 88, 181, 64, 78, 124, 59, 105, 105, 129]

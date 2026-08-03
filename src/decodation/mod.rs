@@ -3,7 +3,7 @@
 //! `encodation` modülünün ters işlemini uygular.
 use super::encodation::{
     EncodationType, Fnc1Position, MACRO_TRAIL, MACRO05, MACRO05_HEAD, MACRO06, MACRO06_HEAD,
-    UNLATCH, ascii, edifact,
+    READER_PROGRAMMING, UNLATCH, ascii, edifact,
 };
 use alloc::{string::String, vec::Vec};
 
@@ -29,6 +29,8 @@ pub enum DataDecodingError {
     CharsetError,
     /// Ham data decoding sırasında ECI code desteklenmez.
     ECICode,
+    /// Reader Programming mesajı host verisi olarak döndürülemez.
+    ReaderProgrammingMessage,
 }
 
 impl core::fmt::Display for DataDecodingError {
@@ -43,6 +45,9 @@ impl core::fmt::Display for DataDecodingError {
             Self::UnexpectedEnd => f.write_str("Data Matrix verisi beklenmedik biçimde sona erdi"),
             Self::CharsetError => f.write_str("ECI karakter kümesi dönüşümü başarısız"),
             Self::ECICode => f.write_str("ham byte çıktısında ECI codeword desteklenmiyor"),
+            Self::ReaderProgrammingMessage => f.write_str(
+                "Reader Programming mesajı host verisi değildir; metadata için decode_message kullanın",
+            ),
         }
     }
 }
@@ -83,7 +88,9 @@ impl<'a> Reader<'a> {
 /// Data Matrix'in data codeword'lerini decode eder.
 pub fn decode_data(data: &[u8]) -> Result<Vec<u8>, DataDecodingError> {
     let parts = decode_parts(data, true)?;
-    if !parts.eci_spans.is_empty() {
+    if parts.reader_programming {
+        Err(DataDecodingError::ReaderProgrammingMessage)
+    } else if !parts.eci_spans.is_empty() {
         Err(DataDecodingError::ECICode)
     } else {
         Ok(parts.output)
@@ -94,6 +101,7 @@ struct DecodedParts {
     output: Vec<u8>,
     eci_spans: Vec<(usize, u32)>,
     fnc1: Option<Fnc1Position>,
+    reader_programming: bool,
 }
 
 fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingError> {
@@ -103,13 +111,20 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
     let mut ecis = Vec::new();
     let mut fnc1 = None;
 
-    let add_macro_trail = match data.peek(0) {
-        Some(MACRO05) => {
+    let reader_programming = if data.peek(0) == Some(READER_PROGRAMMING) {
+        data.eat()?;
+        true
+    } else {
+        false
+    };
+
+    let add_macro_trail = match (reader_programming, data.peek(0)) {
+        (false, Some(MACRO05)) => {
             out.extend_from_slice(MACRO05_HEAD);
             data.eat()?;
             true
         }
-        Some(MACRO06) => {
+        (false, Some(MACRO06)) => {
             out.extend_from_slice(MACRO06_HEAD);
             data.eat()?;
             true
@@ -146,6 +161,7 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
         output: out,
         eci_spans: ecis,
         fnc1,
+        reader_programming,
     })
 }
 
@@ -155,20 +171,25 @@ fn decode_parts(data: &[u8], raw: bool) -> Result<DecodedParts, DataDecodingErro
 /// kullanıldığı varsayılır.
 pub fn decode_str(data: &[u8]) -> Result<String, DataDecodingError> {
     let parts = decode_parts(data, false)?;
+    if parts.reader_programming {
+        return Err(DataDecodingError::ReaderProgrammingMessage);
+    }
     eci::convert(&parts.output, &parts.eci_spans)
 }
 
 /// Decode edilmiş Data Matrix mesajı ve ISO/IEC 16022:2024 Clause 12 iletim
 /// protokolü için gereken metadata.
 ///
-/// [decode_data] yalnızca ham byte'ları döndürür; bu yapı ek olarak FNC1
-/// konumunu ve ECI bölümlerini korur, böylece Annex H symbology identifier ve
-/// Clause 12 iletim formatı üretilebilir.
+/// [decode_data] yalnızca normal host mesajlarının ham byte'larını döndürür; bu
+/// yapı ek olarak FNC1 konumunu, ECI bölümlerini ve Reader Programming işaretini
+/// korur, böylece Annex H symbology identifier ve Clause 12 iletim formatı
+/// üretilebilir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedMessage {
     data: Vec<u8>,
     eci_spans: Vec<(usize, u32)>,
     fnc1: Option<Fnc1Position>,
+    reader_programming: bool,
 }
 
 impl DecodedMessage {
@@ -201,6 +222,14 @@ impl DecodedMessage {
         !self.eci_spans.is_empty()
     }
 
+    /// Symbol'ün Reader Programming mesajı olup olmadığını döndürür.
+    ///
+    /// Bu mesajlar okuyucuyu programlamak içindir ve host verisi olarak
+    /// iletilmemelidir (7.2.4.10).
+    pub fn is_reader_programming(&self) -> bool {
+        self.reader_programming
+    }
+
     /// ISO/IEC 16022:2024 Annex H symbology identifier değerini döndürür.
     ///
     /// ISO/IEC 15424 uyarınca iletilen verinin önüne eklenmesi gereken `]dm`
@@ -222,8 +251,12 @@ impl DecodedMessage {
     /// Çıktı, Annex H symbology identifier ile başlar. Symbol ECI içeriyorsa
     /// 12.5'teki escape protokolü uygulanır: her ECI `\nnnnnn` olarak iletilir
     /// ve verideki her backslash (92) iki kez yazılır. Macro başlık/kuyrukları
-    /// identifier'dan sonra, verinin parçası olarak yer alır (12.4).
+    /// identifier'dan sonra, verinin parçası olarak yer alır (12.4). Reader
+    /// Programming mesajları host'a iletilmediğinden bu durumda boş vektör döner.
     pub fn transmission(&self) -> Vec<u8> {
+        if self.reader_programming {
+            return Vec::new();
+        }
         let mut out = Vec::with_capacity(self.data.len() + 16);
         out.extend_from_slice(self.symbology_identifier().as_bytes());
         if self.eci_spans.is_empty() {
@@ -265,14 +298,15 @@ fn push_eci_escape(out: &mut Vec<u8>, eci: u32) {
 
 /// Data Matrix'in data codeword'lerini iletim metadata'sıyla birlikte decode eder.
 ///
-/// [decode_data] fonksiyonundan farklı olarak ECI içeren symbol'leri reddetmez;
-/// ECI bölümlerini ve FNC1 konumunu [DecodedMessage] içinde döndürür.
+/// [decode_data] fonksiyonundan farklı olarak ECI veya Reader Programming içeren
+/// symbol'leri reddetmez; denetim metadata'sını [DecodedMessage] içinde döndürür.
 pub fn decode_message(data: &[u8]) -> Result<DecodedMessage, DataDecodingError> {
     let parts = decode_parts(data, true)?;
     Ok(DecodedMessage {
         data: parts.output,
         eci_spans: parts.eci_spans,
         fnc1: parts.fnc1,
+        reader_programming: parts.reader_programming,
     })
 }
 
@@ -392,7 +426,12 @@ fn decode_ascii<'a>(
                 }
             }
             233 => return Err(DataDecodingError::NotImplemented("Structured Append")),
-            234 => return Err(DataDecodingError::NotImplemented("Reader Programming")),
+            READER_PROGRAMMING => {
+                return Err(DataDecodingError::UnexpectedCharacter(
+                    "Reader Programming yalnızca ilk codeword olabilir",
+                    READER_PROGRAMMING,
+                ));
+            }
             ascii::UPPER_SHIFT => {
                 upper_shift = true;
             }
@@ -511,13 +550,22 @@ fn decode_edifact<'a>(
     Ok((data, EncodationType::Ascii))
 }
 
-fn decode_c40_tuple(a: u8, b: u8) -> (u8, u8, u8) {
-    let mut full = ((a as u16) << 8) + b as u16 - 1;
+fn decode_c40_tuple(a: u8, b: u8) -> Result<(u8, u8, u8), DataDecodingError> {
+    let encoded = ((a as u16) << 8) + b as u16;
+    // 7.2.5.3: tuple formülü yalnızca 1..=64_000 aralığını üretir. Özellikle
+    // (0, 0) için önce çıkarma yapmak debug build'de panic'e yol açıyordu.
+    if !(1..=64_000).contains(&encoded) {
+        return Err(DataDecodingError::UnexpectedCharacter(
+            "C40/Text/X12 codeword çiftinin 16-bit değeri 1..=64000 aralığında değil",
+            a,
+        ));
+    }
+    let mut full = encoded - 1;
     let tmp = full / 1600;
     let c1 = tmp as u8;
     full -= tmp * 1600;
     let tmp = full / 40;
-    (c1, tmp as u8, (full - tmp * 40) as u8)
+    Ok((c1, tmp as u8, (full - tmp * 40) as u8))
 }
 
 fn dec_x12_val(ch: u8) -> Result<u8, DataDecodingError> {
@@ -545,7 +593,7 @@ fn decode_x12<'a>(
             break;
         }
         let second = data.eat()?;
-        let (c1, c2, c3) = decode_c40_tuple(first, second);
+        let (c1, c2, c3) = decode_c40_tuple(first, second)?;
 
         out.push(dec_x12_val(c1)?);
         out.push(dec_x12_val(c2)?);
@@ -574,12 +622,14 @@ fn decode_c40_like<'a>(
 ) -> Result<(Reader<'a>, EncodationType), DataDecodingError> {
     let mut shift = 0;
     let mut upper_shift = false;
+    let mut explicit_unlatch = false;
     while data.len() > 1 {
         let first = data.eat()?;
         if first == UNLATCH {
+            explicit_unlatch = true;
             break;
         }
-        let (c1, c2, c3) = decode_c40_tuple(first, data.eat()?);
+        let (c1, c2, c3) = decode_c40_tuple(first, data.eat()?)?;
         for ch in [c1, c2, c3].iter().copied() {
             if shift == 0 {
                 match ch {
@@ -682,6 +732,15 @@ fn decode_c40_like<'a>(
     if data.len() == 1 && data.peek(0) == Some(UNLATCH) {
         // End of data noktasında tek UNLATCH
         data.eat()?;
+        explicit_unlatch = true;
+    }
+
+    // Yalnızca 7.2.5.3 b'nin symbol sonunda bıraktığı Shift 1 dolgu durumu
+    // eksik bir shift olarak kabul edilmez. Açık UNLATCH/padding öncesindeki ya
+    // da Upper Shift bayrağı bırakan bütün eksik durumlar bozuk veridir.
+    let valid_shift1_padding = !explicit_unlatch && data.is_empty() && shift == 1 && !upper_shift;
+    if (shift != 0 || upper_shift) && !valid_shift1_padding {
+        return Err(DataDecodingError::UnexpectedEnd);
     }
     Ok((data, EncodationType::Ascii))
 }
@@ -779,6 +838,14 @@ fn test_strict_eot_c40_unlatch() {
             UNLATCH
         )),
     );
+}
+
+#[test]
+fn invalid_c40_like_tuples_return_errors_without_panicking() {
+    for latch in [ascii::LATCH_C40, ascii::LATCH_TEXT, ascii::LATCH_X12] {
+        assert!(decode_data(&[latch, 0, 0]).is_err());
+        assert!(decode_data(&[latch, 250, 255]).is_err());
+    }
 }
 
 #[test]

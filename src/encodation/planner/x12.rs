@@ -57,6 +57,14 @@ impl<T: ContextInformation> Plan for X12Plan<T> {
         cost
     }
 
+    fn state_key(&self) -> usize {
+        if self.ascii_end.is_some() {
+            4
+        } else {
+            self.values
+        }
+    }
+
     fn write_unlatch(&self) -> Self::Context {
         let mut ctx = self.ctx.clone();
         ctx.write(1);

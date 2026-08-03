@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 use super::ContextInformation;
 use super::frac::C;
 use super::{Frac, Plan, StepResult};
-use crate::encodation::{ascii, c40};
+use crate::encodation::c40;
 
 #[cfg(test)]
 use pretty_assertions::assert_eq;
@@ -35,9 +35,6 @@ pub(super) struct C40LikePlan<T: ContextInformation, U: CharsetInfo> {
     values: u8,
     unbeatable_reads: usize,
     ch: u8,
-    two_digit_ascii_end: bool,
-    /// Sonda iki rakam bulunan ASCII bitişinin kullandığı codeword'ler.
-    two_digit_tail: u8,
     cost: Frac,
     dummy: PhantomData<U>,
 }
@@ -50,8 +47,6 @@ impl<T: ContextInformation, U: CharsetInfo> C40LikePlan<T, U> {
             ch: 0,
             unbeatable_reads: 0,
             cost: 0.into(),
-            two_digit_ascii_end: false,
-            two_digit_tail: 0,
             dummy: PhantomData,
         }
     }
@@ -91,20 +86,14 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
             // Boundary üzerindedir; yalnızca bir UNLATCH gerekir.
             Some(self.cost + 1)
         } else {
-            // Doldurur, ardından UNLATCH uygular.
-            Some(self.cost + 2 + 1)
+            // Eksik C40/Text üçlüsü doldurularak mode switch yapılamaz. Planner,
+            // karakter ve üçlü sınırındaki daha önceki ASCII geçişini kullanmalıdır.
+            None
         }
     }
 
     fn write_unlatch(&self) -> Self::Context {
         let mut ctx = self.ctx.clone();
-        if self.values > 0 {
-            if self.values > 2 {
-                return ctx;
-            }
-            // C40 çiftini tamamlar.
-            ctx.write(2);
-        }
         ctx.write(1);
         ctx
     }
@@ -113,84 +102,57 @@ impl<T: ContextInformation, U: CharsetInfo> Plan for C40LikePlan<T, U> {
         if self.ctx.has_more_characters() {
             return self.cost + Frac::new(2 * self.values as C, 3);
         }
-        if self.two_digit_ascii_end {
-            // Sondaki iki rakam ASCII ile encode edilir; ASCII codeword ve isteğe
-            // bağlı UNLATCH'ten oluşan kuyruğun cost'u algılama sırasında hesaplandı.
-            return self.cost + self.two_digit_tail as C;
+        self.end_cost().unwrap_or(self.cost + 1_000_000)
+    }
+
+    fn end_cost(&self) -> Option<Frac> {
+        if self.ctx.has_more_characters() {
+            return Some(self.cost + Frac::new(2 * self.values as C, 3));
         }
-        // Kalan değerleri saklamanın ek cost'unu hesaplar.
-        let extra = if self.values == 2 {
-            let space_left = self.ctx.symbol_size_left(2).unwrap_or(0);
-            if space_left == 0 {
-                2
-            } else {
-                // (val1, val2, 0) = 2 codeword olarak encode eder ve padding ile
-                // devam etmek için son bir unlatch ekler.
-                3
+        match self.values {
+            0 => {
+                // Padding öncesinde ASCII'ye açıkça dönülür.
+                let unlatch = u32::from(self.ctx.symbol_size_left(0)? > 0);
+                Some(self.cost + unlatch)
             }
-        } else if self.values == 1 {
-            // Rakam olmayan tek bir değer kalmıştır. Sonda iki rakam bulunan ASCII
-            // bitişi daha önce döndüğü için buraya ulaşmaz.
-            let space_left = self.ctx.symbol_size_left(1).unwrap_or(0);
-            let ascii_size = ascii::encoding_size(&[self.ch]);
-            if space_left == 0 {
-                if ascii_size == 1 {
-                    1
+            1 if U::val_size(self.ch) == 1 => {
+                // 7.2.5.3 d: tek yuva tam doluyorsa örtük unlatch. Daha geniş
+                // symbol'de 7.2.5.3'ün "diğer bütün durumlar" kuralıyla açık
+                // UNLATCH ve ASCII karakteri kullanılır.
+                if self.ctx.symbol_size_left(1) == Some(0) {
+                    Some(self.cost + 1)
+                } else if self.ctx.symbol_size_left(2).is_some() {
+                    Some(self.cost + 2)
                 } else {
-                    // Bu durumda mümkünse daha büyük bir symbol gerekir.
-                    1 + ascii_size
+                    None
                 }
-            } else if space_left == 1 {
-                // UNLATCH uygular, ardından ASCII ile encode eder (c40.rs handle_end c durumu).
-                1 + ascii_size
-            } else {
-                // İki veya daha fazla codeword kaldığında encoder tek değer için
-                // ASCII'ye geçmez: değeri tam bir C40 üçlüsüne (2 codeword) tamamlar
-                // ve padding öncesinde UNLATCH uygular.
-                3
             }
-        } else {
-            // End of data noktasında buffer boştur. Veri symbol'ü tam doldurmuyorsa
-            // encoder padding öncesinde sona UNLATCH yazar; pad karakterlerinden önce
-            // ASCII'ye dönülmelidir (ISO/IEC 16022:2024, 7.2.4.4).
-            if self.ctx.symbol_size_left(0).unwrap_or(0) > 0 {
-                1
-            } else {
-                0
+            2 if self.ctx.symbol_size_left(2) == Some(0) => {
+                // 7.2.5.3 b yalnızca son iki symbol karakterinde geçerlidir.
+                Some(self.cost + 2)
             }
-        };
-        self.cost + extra as C
+            _ => None,
+        }
+    }
+
+    fn state_key(&self) -> usize {
+        usize::from(self.values)
     }
 
     fn step(&mut self) -> Option<StepResult> {
         // En uygun karakterleri yalnızca boundary üzerindeyken ve daha önce
         // hesaplanmamışsa hesaplar.
         if self.values == 0 && self.unbeatable_reads == 0 {
-            // Kalan karakterler yalnızca iki ASCII rakamı mı?
-            if matches!(self.ctx.rest(), [a, b] if a.is_ascii_digit() && b.is_ascii_digit()) {
-                // Encoder sondaki iki rakamı her zaman tek bir ASCII codeword olarak
-                // encode eder. Symbol içinde alan varsa önüne UNLATCH gelir; yoksa
-                // UNLATCH symbol sonunda örtüktür. Rakamlar C40 stream içinde tutulmaz.
-                let space_left = self.ctx.symbol_size_left(1)?;
-                self.two_digit_ascii_end = true;
-                self.unbeatable_reads = 2;
-                self.two_digit_tail = if space_left >= 1 { 2 } else { 1 };
-                self.ctx.write(self.two_digit_tail as usize);
-            }
-            if !self.two_digit_ascii_end {
-                // Sıradaki base set karakterlerini sayar; rakamlara dikkat eder.
-                self.unbeatable_reads = unbeatable_strike(self.ctx.rest(), U::in_base_set);
-                self.ctx.write((self.unbeatable_reads / 3) * 2);
-            }
+            // Sıradaki base set karakterlerini sayar; rakamlara dikkat eder.
+            self.unbeatable_reads = unbeatable_strike(self.ctx.rest(), U::in_base_set);
+            self.ctx.write((self.unbeatable_reads / 3) * 2);
         }
         let unbeatable = self.unbeatable_reads > 0;
         let end = !self.ctx.has_more_characters();
         if !end {
             self.ch = self.ctx.eat()?;
             if self.unbeatable_reads > 0 {
-                if !self.two_digit_ascii_end || self.values == 0 {
-                    self.values += 1;
-                }
+                self.values += 1;
                 self.unbeatable_reads -= 1;
             } else {
                 self.values += U::val_size(self.ch);

@@ -46,6 +46,10 @@ impl<T: ContextInformation> Plan for Base256Plan<T> {
         self.cost
     }
 
+    fn state_key(&self) -> usize {
+        usize::from(self.written >= 250)
+    }
+
     fn write_unlatch(&self) -> T {
         let mut ctx = self.ctx.clone();
         if self.written >= 250 {

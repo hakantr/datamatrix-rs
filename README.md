@@ -12,7 +12,7 @@ Optimizing encoder içeren Data Matrix (ECC 200) decoding ve encoding kütüphan
 Bu kütüphane mümkün olan en az codeword sayısıyla encoding üreten, optimizing ve
 doğrusal zamanda çalışan bir encoder içerir.
 
-Data Matrix standardı (ISO/IEC 16022:2006), kullanılacak encoding mode'larını
+Data Matrix standardı (ISO/IEC 16022:2024), kullanılacak encoding mode'larını
 seçmek için çoğu durumda çalışan bir heuristic içerir. Ancak doğrudan bir
 implementasyon doğrusal runtime sunmaz. Bu kütüphane mode seçimini encodation
 mode'ları üzerinde shortest path problemi olarak ele alır. Her input karakterinden
@@ -127,13 +127,15 @@ panikleri bu sözleşmenin dışındadır.
       [Extended Rectangular Data Matrix (DMRE)](https://e-d-c.info/projekte/dmre.html).
 - [x] Tile placement decoding.
 - [x] Sınırlı ECI desteği; `extended_eci` feature ek charset'leri etkinleştirir.
+- [x] Mesaj içinde birden çok ECI, sonraki-konum FNC1 ve Reader Programming.
 - [ ] Görsellerde visual detection.
-- [ ] Ayrıntılı decoder çıktısı.
+- [x] FNC1/ECI/Reader Programming metadata'sı ve Clause 12 iletim çıktısı.
 
-Bunlardan sonrası için değerlendirilenler:
-
-- "Structured Append"
-- "Reader Programming"
+Opsiyonel "Structured Append" henüz uygulanmamıştır. Decoder böyle bir symbol'ü
+host verisi iletmeden yapılandırılmış hata ile reddeder. Görsel detector kapsamı
+dışında, `DataMatrix::decode` finder/alignment pattern'leri dahil ve quiet zone
+hariç tam symbol module matrix'ini bekler; dört çeyrek dönüşü ve iki polariteyi
+otomatik dener.
 
 ## Açıklama
 

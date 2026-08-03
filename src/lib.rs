@@ -65,16 +65,21 @@
 //!
 //! # Geçerli sınırlamalar
 //!
-//! Görsel algılama henüz uygulanmamıştır ancak decoding backend tamamlanmış ve API
-//! üzerinden sunulmuştur. Eksik olan tek parça, görselden true ve false değerlerinden
-//! oluşan matrix'i çıkaran detector'dır. Gelecekte genel amaçlı bir detector planlanmaktadır.
+//! Görsel algılama henüz uygulanmamıştır. Decoding backend, finder/alignment
+//! pattern'leri dahil ve quiet zone hariç, satır ve sütun sınırları belirlenmiş
+//! düzenli bir symbol module matrix'i bekler. Çeyrek dönüşler ve reflectance
+//! reversal bu sınırda otomatik çözülür; fotoğraftan örnekleme ve perspektif/grid
+//! bulma ise detector katmanının işidir.
+//! Gelecekte genel amaçlı bir detector planlanmaktadır.
 //!
-//! Diğer sınırlamalar: ISO/IEC 16022:2024 içinde opsiyonel olan structured append
-//! ve reader programming özellikleri uygulanmamıştır; decoder bu codeword'leri
-//! standardın istediği gibi veri iletmeden, yapılandırılmış hata ile reddeder.
+//! ISO/IEC 16022:2024 içinde opsiyonel olan Structured Append uygulanmamıştır;
+//! decoder bu codeword'ü standardın istediği gibi veri iletmeden, yapılandırılmış
+//! hata ile reddeder. Reader Programming encode edilir ve [DecodedMessage]
+//! içinde host verisinden ayrılmış metadata olarak raporlanır.
 //! FNC1 ilk veya ikinci konumda encode edilebilir ([DataMatrixBuilder::with_fnc1]),
-//! ECI numaraları encode edilebilir ve decode tarafında ISO/IEC 15424 symbology
-//! identifier ile Clause 12 iletim formatı [DecodedMessage] üzerinden üretilebilir.
+//! sonraki konum FNC1 ile birden çok/mesaj-içi ECI [DataMatrixSegment] üzerinden
+//! üretilebilir. Decode tarafında ISO/IEC 15424 symbology identifier ile Clause 12
+//! iletim formatı [DecodedMessage] üzerinden üretilebilir.
 //! Eksik bir şeye ihtiyacınız varsa issue açın.
 //!
 //! # Hata ve panik sözleşmesi
@@ -106,6 +111,7 @@ pub mod data;
 #[cfg(feature = "gpui")]
 pub mod gpui;
 
+pub use data::DataMatrixSegment;
 pub use decodation::DecodedMessage;
 pub use encodation::{EncodationType, Fnc1Position};
 pub use symbol_size::{SymbolList, SymbolSize};
@@ -144,6 +150,19 @@ pub struct DataMatrix {
     num_data_codewords: usize,
 }
 
+fn finish_encoding(mut codewords: Vec<u8>, size: SymbolSize) -> DataMatrix {
+    let Ok(ecc) = errorcode::encode_error(&codewords, size) else {
+        invariant_violation("encoder çıktısının data codeword sayısı symbol size ile uyuşmuyor");
+    };
+    let num_data_codewords = codewords.len();
+    codewords.extend_from_slice(&ecc);
+    DataMatrix {
+        size,
+        codewords,
+        num_data_codewords,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Data Matrix decode edilirken oluşan hatalar.
 pub enum DecodingError {
@@ -176,7 +195,9 @@ impl DataMatrix {
 
     /// Data Matrix'i piksel gösteriminden decode eder.
     ///
-    /// Alignment pattern dahil edilmelidir. `width` argümanı tek satırdaki piksel sayısını belirtir.
+    /// Finder/alignment pattern'leri dahil edilmeli, quiet zone çıkarılmış olmalıdır.
+    /// `width` argümanı tek satırdaki module sayısını belirtir. Dört çeyrek dönüş
+    /// ile koyu-açık reflectance reversal otomatik olarak denenir.
     ///
     /// Piksellerin row-major sırada verilmesi beklenir; önce en üst satır, ardından
     /// ikinci satır ve diğerleri gelir.
@@ -185,7 +206,7 @@ impl DataMatrix {
     /// `FNC1` veri olarak iletilmez; symbology identifier (`]d2` vb.) ve ECI
     /// bilgisiyle birlikte ISO/IEC 16022:2024 Clause 12 iletim çıktısı için
     /// [decode_message()](Self::decode_message) yöntemine bakın. ECI içeren
-    /// symbol'lerde bu fonksiyon hata döndürür.
+    /// veya Reader Programming işaretli symbol'lerde bu fonksiyon hata döndürür.
     pub fn decode(pixels: &[bool], width: usize) -> Result<Vec<u8>, DecodingError> {
         let data_codewords = Self::data_codewords_from_pixels(pixels, width)?;
         decodation::decode_data(&data_codewords).map_err(DecodingError::DataDecoding)
@@ -194,8 +215,9 @@ impl DataMatrix {
     /// Data Matrix'i piksel gösteriminden iletim metadata'sıyla birlikte decode eder.
     ///
     /// [decode()](Self::decode) yönteminden farklı olarak ECI içeren symbol'leri
-    /// reddetmez; FNC1 konumunu, ECI bölümlerini, Annex H symbology identifier
-    /// değerini ve Clause 12 iletim byte'larını [DecodedMessage] üzerinden sunar.
+    /// reddetmez; FNC1 konumunu, ECI bölümlerini, Reader Programming işaretini,
+    /// Annex H symbology identifier değerini ve Clause 12 iletim byte'larını
+    /// [DecodedMessage] üzerinden sunar.
     pub fn decode_message(pixels: &[bool], width: usize) -> Result<DecodedMessage, DecodingError> {
         let data_codewords = Self::data_codewords_from_pixels(pixels, width)?;
         decodation::decode_message(&data_codewords).map_err(DecodingError::DataDecoding)
@@ -203,16 +225,63 @@ impl DataMatrix {
 
     /// Piksellerden error correction uygulanmış data codeword'lerini çıkarır.
     fn data_codewords_from_pixels(pixels: &[bool], width: usize) -> Result<Vec<u8>, DecodingError> {
-        let (matrix_map, size) =
-            MatrixMap::try_from_bits(pixels, width).map_err(DecodingError::PixelConversion)?;
-        let mut codewords = matrix_map.codewords();
-        errorcode::decode_error(&mut codewords, size).map_err(DecodingError::ErrorCorrection)?;
-        let Some(data_codewords) = codewords.get(..size.num_data_codewords()) else {
-            invariant_violation(
-                "decode edilen data codeword aralığı toplam codeword sayısını aştı",
-            );
-        };
-        Ok(data_codewords.to_vec())
+        if width == 0 {
+            return Err(DecodingError::PixelConversion(
+                placement::BitmapConversionError::ZeroWidth,
+            ));
+        }
+        if !pixels.len().is_multiple_of(width) {
+            return Err(DecodingError::PixelConversion(
+                placement::BitmapConversionError::DataSize,
+            ));
+        }
+
+        let mut first_conversion_error = None;
+        let mut first_ecc_error = None;
+        // 6.1: yön bağımsızlığı ve 6.2 a: reflectance reversal. Görsel detector
+        // module grid'ini çıkardıktan sonra kalan ayrık dönüşümler burada denenir.
+        for inverted in [false, true] {
+            for quarter_turns in 0..4 {
+                let Some((candidate, candidate_width)) =
+                    transform_modules(pixels, width, quarter_turns, inverted)
+                else {
+                    return Err(DecodingError::PixelConversion(
+                        placement::BitmapConversionError::ArithmeticOverflow,
+                    ));
+                };
+                let (matrix_map, size) = match MatrixMap::try_from_bits(&candidate, candidate_width)
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if first_conversion_error.is_none() {
+                            first_conversion_error = Some(error);
+                        }
+                        continue;
+                    }
+                };
+                let mut codewords = matrix_map.codewords();
+                if let Err(error) = errorcode::decode_error(&mut codewords, size) {
+                    if first_ecc_error.is_none() {
+                        first_ecc_error = Some(error);
+                    }
+                    continue;
+                }
+                let Some(data_codewords) = codewords.get(..size.num_data_codewords()) else {
+                    invariant_violation(
+                        "decode edilen data codeword aralığı toplam codeword sayısını aştı",
+                    );
+                };
+                return Ok(data_codewords.to_vec());
+            }
+        }
+
+        if let Some(error) = first_ecc_error {
+            Err(DecodingError::ErrorCorrection(error))
+        } else {
+            Err(DecodingError::PixelConversion(
+                first_conversion_error.unwrap_or(placement::BitmapConversionError::SymbolSize),
+            ))
+        }
     }
 
     /// Data'yı encoded biçimde döndürür.
@@ -290,6 +359,71 @@ impl DataMatrix {
             .with_fnc1(Some(Fnc1Position::First))
             .encode(data)
     }
+
+    /// ECI, sonraki-konum FNC1 veya Reader Programming içeren bölümlü bir
+    /// mesajı encode eder.
+    ///
+    /// ```rust
+    /// # use datamatrix::{DataMatrix, DataMatrixSegment, SymbolList};
+    /// let code = DataMatrix::encode_segments(
+    ///     &[
+    ///         DataMatrixSegment::Data(b"A"),
+    ///         DataMatrixSegment::Eci(7),
+    ///         DataMatrixSegment::Data(&[182]),
+    ///         DataMatrixSegment::Fnc1,
+    ///         DataMatrixSegment::Data(b"B"),
+    ///     ],
+    ///     SymbolList::default(),
+    /// )?;
+    /// let message = datamatrix::data::decode_message(code.data_codewords())?;
+    /// assert_eq!(message.data(), &[b'A', 182, 29, b'B']);
+    /// assert_eq!(message.eci_spans(), &[(1, 7)]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn encode_segments<I: Into<SymbolList>>(
+        segments: &[DataMatrixSegment<'_>],
+        symbol_list: I,
+    ) -> Result<DataMatrix, DataEncodingError> {
+        DataMatrixBuilder::new()
+            .with_symbol_list(symbol_list)
+            .encode_segments(segments)
+    }
+}
+
+/// Row-major module matrix'ine saat yönünde çeyrek dönüş ve isteğe bağlı
+/// reflectance reversal uygular.
+fn transform_modules(
+    pixels: &[bool],
+    width: usize,
+    quarter_turns: usize,
+    inverted: bool,
+) -> Option<(Vec<bool>, usize)> {
+    if width == 0 || !pixels.len().is_multiple_of(width) {
+        return None;
+    }
+    let height = pixels.len() / width;
+    let turns = quarter_turns % 4;
+    let output_width = if turns.is_multiple_of(2) {
+        width
+    } else {
+        height
+    };
+    let mut output = alloc::vec![false; pixels.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let input_index = y.checked_mul(width)?.checked_add(x)?;
+            let (out_x, out_y) = match turns {
+                0 => (x, y),
+                1 => (height.checked_sub(y + 1)?, x),
+                2 => (width.checked_sub(x + 1)?, height.checked_sub(y + 1)?),
+                3 => (y, width.checked_sub(x + 1)?),
+                _ => return None,
+            };
+            let output_index = out_y.checked_mul(output_width)?.checked_add(out_x)?;
+            *output.get_mut(output_index)? = pixels.get(input_index).copied()? ^ inverted;
+        }
+    }
+    Some((output, output_width))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,6 +433,7 @@ pub struct DataMatrixBuilder {
     symbol_list: SymbolList,
     use_macros: bool,
     fnc1: Option<Fnc1Position>,
+    reader_programming: bool,
 }
 
 impl DataMatrixBuilder {
@@ -308,6 +443,7 @@ impl DataMatrixBuilder {
             symbol_list: SymbolList::default(),
             use_macros: true,
             fnc1: None,
+            reader_programming: false,
         }
     }
 
@@ -347,10 +483,24 @@ impl DataMatrixBuilder {
     /// [First](Fnc1Position::First), verinin GS1 formatına uyduğunu (12.2);
     /// [Second](Fnc1Position::Second), AIM tarafından yetkilendirilen bir endüstri
     /// formatına uyduğunu (12.3) bildirir. İkinci konum için verinin ilk karakteri
-    /// tek codeword'lük ASCII (tek karakter veya rakam çifti) olmalıdır; aksi
-    /// halde encoding hata döndürür. FNC1 belirtildiğinde macro'lar kullanılmaz.
+    /// tek codeword'lük ASCII (tek karakter veya rakam çifti) olmalıdır; Reader
+    /// Programming etkinse ilk codeword zaten 234 olduğundan FNC1 doğrudan ikinci
+    /// konuma gelir. Aksi halde encoding hata döndürür. FNC1 belirtildiğinde
+    /// macro'lar kullanılmaz.
     pub fn with_fnc1(self, fnc1: Option<Fnc1Position>) -> Self {
         Self { fnc1, ..self }
+    }
+
+    /// Symbol'ü bir Reader Programming mesajı olarak işaretler (7.2.4.10).
+    ///
+    /// Codeword 234 ilk konuma yazılır ve macro otomatik olarak devre dışı kalır.
+    /// İlk-konum FNC1 aynı konumu istediği için birlikte kullanılırsa encoding
+    /// hata döndürür; ikinci-konum FNC1 doğrudan ikinci codeword'e yazılabilir.
+    pub fn with_reader_programming(self, enabled: bool) -> Self {
+        Self {
+            reader_programming: enabled,
+            ..self
+        }
     }
 
     /// Macro kullanılıp kullanılmayacağını belirtir.
@@ -399,32 +549,41 @@ impl DataMatrixBuilder {
         }
     }
 
+    /// Denetim codeword'leri içeren bölümlü mesajı encode eder.
+    ///
+    /// Birden çok veya mesaj-içi ECI, sonraki konumlarda alan ayırıcı FNC1 ve
+    /// Reader Programming için [`DataMatrixSegment`] kullanılır. Segment verisi
+    /// ASCII encodation scheme ile yazılır; `with_encodation_types` ve macro
+    /// seçimi bu özel yolda kullanılmaz.
+    pub fn encode_segments(
+        self,
+        segments: &[DataMatrixSegment<'_>],
+    ) -> Result<DataMatrix, DataEncodingError> {
+        let (codewords, size) = data::encode_data_segments_internal(
+            segments,
+            &self.symbol_list,
+            self.fnc1,
+            self.reader_programming,
+        )?;
+        Ok(finish_encoding(codewords, size))
+    }
+
     #[doc(hidden)]
     pub fn encode_eci(
         self,
         data: &[u8],
         eci: Option<u32>,
     ) -> Result<DataMatrix, DataEncodingError> {
-        let (mut codewords, size) = data::encode_data_internal(
+        let (codewords, size) = data::encode_data_internal(
             data,
             &self.symbol_list,
             eci,
             self.encodation_types,
             self.use_macros,
             self.fnc1,
+            self.reader_programming,
         )?;
-        let Ok(ecc) = errorcode::encode_error(&codewords, size) else {
-            invariant_violation(
-                "encoder çıktısının data codeword sayısı symbol size ile uyuşmuyor",
-            );
-        };
-        let num_data_codewords = codewords.len();
-        codewords.extend_from_slice(&ecc);
-        Ok(DataMatrix {
-            size,
-            codewords,
-            num_data_codewords,
-        })
+        Ok(finish_encoding(codewords, size))
     }
 }
 
@@ -444,6 +603,81 @@ fn utf8_eci_test() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn segmented_controls_round_trip_with_multiple_eci_and_later_fnc1()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = DataMatrix::encode_segments(
+        &[
+            DataMatrixSegment::Data(&[182]),
+            DataMatrixSegment::Eci(7),
+            DataMatrixSegment::Data(&[182]),
+            DataMatrixSegment::Eci(3),
+            DataMatrixSegment::Data(b"A"),
+            DataMatrixSegment::Fnc1,
+            DataMatrixSegment::Data(b"B"),
+        ],
+        SymbolList::default(),
+    )?;
+    assert_eq!(
+        code.data_codewords().get(..11),
+        Some([235, 55, 241, 8, 235, 55, 241, 4, 66, 232, 67].as_slice())
+    );
+
+    let message = data::decode_message(code.data_codewords())?;
+    assert_eq!(message.data(), &[182, 182, b'A', 29, b'B']);
+    assert_eq!(message.eci_spans(), &[(1, 7), (2, 3)]);
+    assert_eq!(message.fnc1(), None);
+    assert_eq!(message.symbology_identifier(), "]d4");
+    Ok(())
+}
+
+#[test]
+fn reader_programming_is_encoded_and_reported_as_control_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = DataMatrixBuilder::new()
+        .with_reader_programming(true)
+        .encode(b"ABC")?;
+    assert_eq!(
+        code.data_codewords().first(),
+        Some(&encodation::READER_PROGRAMMING)
+    );
+
+    let message = data::decode_message(code.data_codewords())?;
+    assert!(message.is_reader_programming());
+    assert_eq!(message.data(), b"ABC");
+    assert!(message.transmission().is_empty());
+
+    let code = DataMatrixBuilder::new()
+        .with_reader_programming(true)
+        .with_fnc1(Some(Fnc1Position::Second))
+        .encode(b"A")?;
+    let message = data::decode_message(code.data_codewords())?;
+    assert!(message.is_reader_programming());
+    assert_eq!(message.fnc1(), Some(Fnc1Position::Second));
+
+    let conflict = DataMatrixBuilder::new()
+        .with_reader_programming(true)
+        .with_fnc1(Some(Fnc1Position::First))
+        .encode(b"A");
+    assert!(matches!(
+        conflict,
+        Err(DataEncodingError::InvalidControlPosition(_))
+    ));
+
+    let misplaced = DataMatrix::encode_segments(
+        &[
+            DataMatrixSegment::Data(b"A"),
+            DataMatrixSegment::ReaderProgramming,
+        ],
+        SymbolList::default(),
+    );
+    assert!(matches!(
+        misplaced,
+        Err(DataEncodingError::InvalidControlPosition(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn test_tile_placement_forth_and_back() -> Result<(), Box<dyn std::error::Error>> {
     let mut rnd_data = test::random_data();
     for size in SymbolList::all() {
@@ -453,6 +687,29 @@ fn test_tile_placement_forth_and_back() -> Result<(), Box<dyn std::error::Error>
         let bitmap = map.bitmap();
         let (matrix_map, _size) = MatrixMap::try_from_bits(bitmap.bits(), bitmap.width())?;
         assert_eq!(matrix_map.codewords(), data);
+    }
+    Ok(())
+}
+
+#[test]
+fn decode_accepts_all_quarter_turns_and_reflectance_reversal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let input = b"rotate";
+    let code = DataMatrix::encode(input, SymbolSize::Rect8x32)?;
+    let bitmap = code.bitmap();
+    let canonical: Vec<bool> = bitmap.bits().into();
+
+    for inverted in [false, true] {
+        for quarter_turns in 0..4 {
+            let (transformed, width) =
+                transform_modules(&canonical, bitmap.width(), quarter_turns, inverted)
+                    .ok_or("module dönüşümü başarısız")?;
+            assert_eq!(
+                DataMatrix::decode(&transformed, width),
+                Ok(input.to_vec()),
+                "quarter_turns={quarter_turns}, inverted={inverted}",
+            );
+        }
     }
     Ok(())
 }
@@ -530,6 +787,22 @@ fn test_too_much_data() {
     let data = rnd_data(5000);
     let result = DataMatrix::encode(&data, SymbolList::default());
     assert_eq!(result, Err(DataEncodingError::TooMuchOrIllegalData));
+}
+
+#[test]
+fn automatic_size_selection_reaches_compacted_square144_capacities() -> Result<(), DataEncodingError>
+{
+    for (byte, len) in [(b'A', 1_556), (b'A', 2_335), (b'0', 3_116)] {
+        let input = alloc::vec![byte; len];
+        let encoded = DataMatrix::encode(&input, SymbolList::default())?;
+        assert_eq!(data::decode_data(encoded.data_codewords()), Ok(input));
+    }
+
+    assert_eq!(
+        DataMatrix::encode(&alloc::vec![b'0'; 3_117], SymbolList::default()),
+        Err(DataEncodingError::TooMuchOrIllegalData)
+    );
+    Ok(())
 }
 
 #[cfg(test)]

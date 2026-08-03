@@ -115,9 +115,11 @@ fn regression4() {
 #[test]
 fn regression5() {
     forth_and_back(&[32, 32, 153, 205]);
+    // Eski encoder, Text tuple'ını (Upper Shift, Shift 3) durumuyla bırakıp
+    // UNLATCH yazıyordu. Eksik shift state artık sessizce atılmaz.
     assert_eq!(
         decode_data(&[239, 19, 58, 187, 154, 10, 243, 254, 235, 78]),
-        Ok(vec![32, 32, 153, 205])
+        Err(super::DataDecodingError::UnexpectedEnd)
     );
 }
 
@@ -356,14 +358,19 @@ fn decode_structured_append_rejected_cleanly() {
 }
 
 #[test]
-fn decode_reader_programming_rejected_cleanly() {
-    // Codeword 234 (Reader Programming) için de aynı sözleşme geçerlidir.
+fn decode_reader_programming_preserves_control_semantics() -> Result<(), super::DataDecodingError> {
+    // Reader Programming mesajı normal host verisi olarak döndürülmez; ayrıntılı
+    // API işareti ve program byte'larını ayrı sunar.
     assert_eq!(
         super::decode_data(&[234, 66]),
-        Err(super::DataDecodingError::NotImplemented(
-            "Reader Programming"
-        ))
+        Err(super::DataDecodingError::ReaderProgrammingMessage)
     );
+    let message = super::decode_message(&[234, 66])?;
+    assert_eq!(message.data(), b"A");
+    assert!(message.is_reader_programming());
+    assert!(message.transmission().is_empty());
+    assert!(super::decode_message(&[66, 234]).is_err());
+    Ok(())
 }
 
 #[test]

@@ -118,25 +118,32 @@ fn optimize_plan<'a>(
             }
         }
 
+        if at_end {
+            // Bütün planlar end of data noktasındadır. Mode'a özgü bitişi
+            // geçersiz olan planları dominance pruning uygulanmadan önce eleriz;
+            // aksi halde düşük görünen eksik bir C40/Text grubu geçerli ASCII
+            // alternatifini kaldırabilir.
+            let plan = new_plan
+                .into_iter()
+                .filter_map(|plan| plan.end_cost().map(|cost| (plan, cost)))
+                .min_by_key(|(plan, cost)| {
+                    // Eşitliği çözmek için ".index()" sıralamasını kullanırız.
+                    let max_enc = plan
+                        .switches
+                        .iter()
+                        .map(|e| e.1.index())
+                        .max()
+                        .unwrap_or(usize::MAX);
+                    (cost.ceil(), max_enc, plan.switches.len())
+                })?
+                .0;
+            return Some(plan);
+        }
+
         remove_hopeless_cases(&mut new_plan);
 
         if new_plan.is_empty() {
             return None;
-        }
-
-        if at_end {
-            // Bütün planlar end of data noktasındadır; en iyisini seçer.
-            let plan = new_plan.into_iter().min_by_key(|p| {
-                // Eşitliği çözmek için ".index()" sıralamasını kullanırız.
-                let max_enc = p
-                    .switches
-                    .iter()
-                    .map(|e| e.1.index())
-                    .max()
-                    .unwrap_or(usize::MAX);
-                (p.cost().ceil(), max_enc, p.switches.len())
-            })?;
-            return Some(plan);
         }
         core::mem::swap(&mut plans, &mut new_plan);
     }
@@ -147,11 +154,15 @@ fn optimize_plan<'a>(
 fn remove_hopeless_cases(list: &mut Vec<GenericPlan>) {
     list.sort_unstable_by_key(Plan::cost);
 
-    // (başlangıç mode'u, geçerli mode) çiftine sahip planlar arasında yalnızca minimumu tutar.
-    let mut seen = [false; 6 * 6];
+    // Aynı başlangıç mode'u, geçerli mode ve mode-içi artık durumuna sahip
+    // planlar arasında yalnızca minimumu tutar. C40/Text ve X12/EDIFACT grup
+    // sınırları mode switch geçerliliğini değiştirdiğinden bu durum atılamaz.
+    const STATES_PER_MODE: usize = 8;
+    let mut seen = [false; 6 * 6 * STATES_PER_MODE];
     let mut unique = Vec::with_capacity(list.len());
     for pl in list.drain(..) {
-        let pl_idx = pl.start_mode().index() * 6 + pl.current().index();
+        let pl_idx =
+            (pl.start_mode().index() * 6 + pl.current().index()) * STATES_PER_MODE + pl.state_key();
         if let Some(was_seen) = seen.get_mut(pl_idx)
             && !*was_seen
         {
@@ -175,6 +186,19 @@ fn remove_hopeless_cases(list: &mut Vec<GenericPlan>) {
             let Some(second) = list.get(index) else {
                 break;
             };
+            // Bir mode'a yeni geçiş o mode'un yalnızca sıfır artık durumunu
+            // oluşturur. Bu nedenle gerek aynı mode'daki farklı artık durumlar,
+            // gerek başka bir mode'dan geçilerek yeniden üretilemeyen sıfır-dışı
+            // durumlar birbirinin yerine kullanılamaz.
+            let comparable_state = if first.current() == second.current() {
+                first.state_key() == second.state_key()
+            } else {
+                second.state_key() == 0
+            };
+            if !comparable_state {
+                index += 1;
+                continue;
+            }
             if let Some(first_cost) = first.cost_for_switching_to(second.current()) {
                 let second_cost = second.cost();
                 if first_cost < second_cost {
@@ -235,6 +259,21 @@ fn test_hopeless_remove_2() {
     let mut list = vec![a.clone(), c.clone()];
     remove_hopeless_cases(&mut list);
     assert_eq!(list, vec![c, a]);
+}
+
+#[test]
+fn test_hopeless_keeps_cross_mode_residual_state() {
+    let symbols = SymbolList::default();
+    let ascii = GenericPlan::for_mode(EncodationType::Ascii, b"CD", 0, &symbols);
+    let mut c40 = GenericPlan::for_mode(EncodationType::C40, b"ABCD", 0, &symbols);
+    c40.step();
+    c40.step();
+
+    // ASCII -> C40 geçişi maliyetçe daha ucuz görünse de yeni C40 planı artık
+    // durumu 0 ile başlar; iki bekleyen C40 değerini temsil eden planı ezemez.
+    let mut list = vec![ascii.clone(), c40.clone()];
+    remove_hopeless_cases(&mut list);
+    assert_eq!(list, vec![ascii, c40]);
 }
 
 #[test]

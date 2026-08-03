@@ -65,6 +65,14 @@ impl<T: ContextInformation> Plan for EdifactPlan<T> {
         self.cost - Frac::new(3 * w as C, 4) + trailing as C
     }
 
+    fn state_key(&self) -> usize {
+        if self.ascii_end.is_some() {
+            4
+        } else {
+            self.written
+        }
+    }
+
     fn write_unlatch(&self) -> Self::Context {
         let mut ctx = self.ctx.clone();
         // Encoder bunu herhangi bir byte yazılmadan önce çağırır.
