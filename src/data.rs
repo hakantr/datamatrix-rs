@@ -66,8 +66,10 @@ pub fn encode_data(
 ///
 /// ECI yalnızca ASCII encodation'dan çağrılabildiği için her [`Data`](DataMatrixSegment::Data)
 /// bölümü ASCII scheme ile encode edilir. Rakam çiftleri ve extended ASCII'nin
-/// standart compaction kuralları uygulanır. Tek ve başlangıç ECI'li veri için
-/// bütün mode'ları optimize eden [`encode_data`] daha küçük sonuç verebilir.
+/// standart compaction kuralları uygulanır; rakam çifti ardışık `Data`
+/// bölümlerinin sınırından da devam eder, araya giren ECI/FNC1 gibi denetim
+/// codeword'leri çifti böler. Tek ve başlangıç ECI'li veri için bütün mode'ları
+/// optimize eden [`encode_data`] daha küçük sonuç verebilir.
 pub fn encode_data_segments(
     segments: &[DataMatrixSegment<'_>],
     symbol_list: &SymbolList,
@@ -103,10 +105,16 @@ pub(crate) fn encode_data_segments_internal(
         None => (),
     }
 
+    // Ardışık Data bölümleri tek ASCII akışı oluşturur: bölüm sonunda eşlenmemiş
+    // kalan tek rakam, bir sonraki bölümün ilk rakamıyla çift codeword yapabilir.
+    let mut pending_digit: Option<u8> = None;
     for segment in segments {
         match *segment {
             DataMatrixSegment::Data(mut bytes) => {
-                if fnc1_second_pending && !bytes.is_empty() {
+                if bytes.is_empty() {
+                    continue;
+                }
+                if fnc1_second_pending {
                     let consumed = write_first_ascii_codeword(bytes, &mut codewords)?;
                     let Some(rest) = bytes.get(consumed..) else {
                         crate::invariant_violation(
@@ -117,7 +125,16 @@ pub(crate) fn encode_data_segments_internal(
                     codewords.push(ascii::FNC1);
                     fnc1_second_pending = false;
                 }
-                write_ascii_codewords(bytes, &mut codewords);
+                if let Some(digit) = pending_digit.take() {
+                    match bytes {
+                        [next @ b'0'..=b'9', rest @ ..] => {
+                            codewords.push((digit - b'0') * 10 + (next - b'0') + 130);
+                            bytes = rest;
+                        }
+                        _ => codewords.push(digit + 1),
+                    }
+                }
+                pending_digit = write_ascii_codewords(bytes, &mut codewords);
             }
             DataMatrixSegment::Eci(eci) => {
                 if fnc1_second_pending {
@@ -125,6 +142,7 @@ pub(crate) fn encode_data_segments_internal(
                         "ikinci konumdaki FNC1'den önce ECI kullanılamaz",
                     ));
                 }
+                flush_pending_digit(&mut pending_digit, &mut codewords);
                 write_eci_codewords(&mut codewords, eci)?;
             }
             DataMatrixSegment::Fnc1 => {
@@ -133,9 +151,11 @@ pub(crate) fn encode_data_segments_internal(
                         "ikinci konumdaki FNC1 için önce bir ASCII data codeword gerekir",
                     ));
                 }
+                flush_pending_digit(&mut pending_digit, &mut codewords);
                 codewords.push(ascii::FNC1);
             }
             DataMatrixSegment::ReaderProgramming => {
+                flush_pending_digit(&mut pending_digit, &mut codewords);
                 if fnc1_second_pending || !codewords.is_empty() {
                     return Err(DataEncodingError::InvalidControlPosition(
                         "Reader Programming ilk codeword olmalıdır",
@@ -152,7 +172,14 @@ pub(crate) fn encode_data_segments_internal(
         ));
     }
 
+    flush_pending_digit(&mut pending_digit, &mut codewords);
     pad_ascii_codewords(codewords, symbol_list)
+}
+
+fn flush_pending_digit(pending_digit: &mut Option<u8>, codewords: &mut Vec<u8>) {
+    if let Some(digit) = pending_digit.take() {
+        codewords.push(digit + 1);
+    }
 }
 
 fn write_first_ascii_codeword(
@@ -174,23 +201,27 @@ fn write_first_ascii_codeword(
     }
 }
 
-fn write_ascii_codewords(mut data: &[u8], codewords: &mut Vec<u8>) {
-    while let Some((ch, rest)) = data.split_first() {
-        if let [a, b, tail @ ..] = data
-            && a.is_ascii_digit()
-            && b.is_ascii_digit()
-        {
-            codewords.push((a - b'0') * 10 + (b - b'0') + 130);
-            data = tail;
-        } else {
-            match ch {
-                0..=127 => codewords.push(ch + 1),
-                128..=255 => {
-                    codewords.push(ascii::UPPER_SHIFT);
-                    codewords.push(ch - 127);
-                }
+/// Sondaki eşlenmemiş tek rakamı yazmaz; bir sonraki `Data` bölümüyle rakam
+/// çifti oluşturabilmesi için çağırana geri verir.
+fn write_ascii_codewords(mut data: &[u8], codewords: &mut Vec<u8>) -> Option<u8> {
+    loop {
+        match data {
+            [a, b, rest @ ..] if a.is_ascii_digit() && b.is_ascii_digit() => {
+                codewords.push((a - b'0') * 10 + (b - b'0') + 130);
+                data = rest;
             }
-            data = rest;
+            [digit @ b'0'..=b'9'] => return Some(*digit),
+            [ch, rest @ ..] => {
+                match ch {
+                    0..=127 => codewords.push(ch + 1),
+                    128..=255 => {
+                        codewords.push(ascii::UPPER_SHIFT);
+                        codewords.push(ch - 127);
+                    }
+                }
+                data = rest;
+            }
+            [] => return None,
         }
     }
 }
@@ -370,6 +401,37 @@ fn macro_body_backup_never_reintroduces_the_trailer() -> Result<(), DataEncoding
             assert_eq!(decode_data(&codewords), Ok(input), "body len={len}");
         }
     }
+    Ok(())
+}
+
+#[test]
+fn segment_boundaries_keep_digit_pair_compaction() -> Result<(), DataEncodingError> {
+    // "1" + "" + "23" tek ASCII akışı gibi çiftlenir: (1, 2) çifti ve tek '3'.
+    let (codewords, _) = encode_data_segments(
+        &[
+            DataMatrixSegment::Data(b"1"),
+            DataMatrixSegment::Data(b""),
+            DataMatrixSegment::Data(b"23"),
+        ],
+        &SymbolList::default(),
+    )?;
+    assert_eq!(codewords.get(..2), Some([142, b'3' + 1].as_slice()));
+    assert_eq!(decode_data(&codewords), Ok(b"123".to_vec()));
+
+    // Denetim codeword'leri alan sınırıdır; FNC1 üzerinden rakam çifti kurulmaz.
+    let (codewords, _) = encode_data_segments(
+        &[
+            DataMatrixSegment::Data(b"A1"),
+            DataMatrixSegment::Fnc1,
+            DataMatrixSegment::Data(b"2"),
+        ],
+        &SymbolList::default(),
+    )?;
+    assert_eq!(
+        codewords.get(..4),
+        Some([b'A' + 1, b'1' + 1, 232, b'2' + 1].as_slice())
+    );
+    assert_eq!(decode_data(&codewords), Ok([b'A', b'1', 29, b'2'].to_vec()));
     Ok(())
 }
 
